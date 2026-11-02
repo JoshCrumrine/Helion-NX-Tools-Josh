@@ -16,12 +16,14 @@ Subcommands:
     login    Open a browser to log in once; the session persists on disk.
     scrape   Extract structured product fields as JSON.
     cad      Download a CAD model (default: 3-D Parasolid, no threads).
+    fetch    scrape + cad for one part in a single browser session.
 
 Usage:
     python mcmaster_scraper.py login [--profile DIR]
     python mcmaster_scraper.py scrape 91274A004 [MORE ...] [--out file.json] [--headful]
     python mcmaster_scraper.py cad 91274A004 [--out DIR] [--format parasolid] [--threads]
     python mcmaster_scraper.py cad 91274A004 --list
+    python mcmaster_scraper.py fetch 91274A004 [--out DIR] [--result FILE]
 """
 import argparse
 import base64
@@ -29,6 +31,7 @@ import json
 import os
 import sys
 import time
+import traceback
 import urllib.parse
 
 from selenium import webdriver
@@ -215,6 +218,25 @@ return {
 """
 
 
+def read_product_data(driver, settle=0.3, cap=2.0):
+    """Run EXTRACT_JS until two reads `settle` s apart agree; return that read.
+
+    The header, specs and price render together, but the SPA re-renders the
+    page about 0.3 s later (the spec rows briefly empty out), so a single read
+    can land mid-re-render. Gives up after `cap` s (the fixed wait this
+    replaced) and returns the last read.
+    """
+    deadline = time.time() + cap
+    data = driver.execute_script(EXTRACT_JS)
+    while time.time() < deadline:
+        time.sleep(settle)
+        again = driver.execute_script(EXTRACT_JS)
+        if again == data and again.get("specs"):
+            return again
+        data = again
+    return data
+
+
 def scrape_part(driver, part):
     url = URL.format(part=part)
     driver.get(url)
@@ -237,8 +259,7 @@ def scrape_part(driver, part):
             "error": "product header did not render (invalid part #, "
                      "bot-blocked, or layout changed)",
         }
-    time.sleep(2)  # let the SPA finish populating specs/price
-    data = driver.execute_script(EXTRACT_JS)
+    data = read_product_data(driver)
     data["part_number"] = data.get("part_number") or part
     data["url"] = url
     return data
@@ -307,14 +328,23 @@ FORMAT_LABEL = {
     "pdf": "PDF",
 }
 
-READ_OPTIONS_JS = """
+# CAD dropdown state: disabled (McMaster greys it out when the part has no
+# CAD), whether its listbox is open, and the options listed so far.
+CAD_MENU_JS = """
+const btn = document.querySelector('[class*="_buttonDropdown_"]');
 const lb = document.querySelector('[role="listbox"]');
-if (!lb) return [];
-return [...lb.querySelectorAll('li[role="option"]')].map(li => ({
+const options = lb ? [...lb.querySelectorAll('li[role="option"]')].map(li => ({
   label: li.textContent.trim(),
   path: li.getAttribute('value')
-})).filter(o => o.path);
+})).filter(o => o.path) : [];
+return {
+  disabled: !!btn && btn.getAttribute('aria-disabled') === 'true',
+  open: !!lb,
+  options,
+};
 """
+
+CLICK_CAD_MENU_JS = "document.querySelector('[class*=\"_buttonDropdown_\"]').click();"
 
 # Fetch a same-origin URL inside the page and hand the bytes back as base64.
 FETCH_JS = r"""
@@ -337,41 +367,55 @@ fetch(url, { credentials: 'include' })
 """
 
 
-def get_cad_options(driver):
-    """Open the dropdown and return [{label, path}] for every CAD file."""
+def get_cad_options(driver, fmt=None, want_threads=False):
+    """Open the dropdown and return [{label, path}] for every CAD file.
+
+    The SPA re-renders the page right after it first appears, which can close
+    the dropdown again, so it is re-clicked whenever it is shut. With `fmt`,
+    returns as soon as the option matching_option() wants is listed.
+    Otherwise the list is only returned once it is STABLE (unchanged for
+    0.8 s): it populates incrementally, and a partial list can miss the
+    "no threads" variants, which makes choose_option fall back to the plain
+    (threaded) file -> wrong CAD. Returns [] if the dropdown stays disabled
+    (McMaster has no CAD for the part).
+    """
     WebDriverWait(driver, 40).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, '[class*="_buttonDropdown_"]'))
     )
-    time.sleep(1.5)  # let the SPA settle so the button stops re-rendering
-    # Re-query and click inside JS to avoid stale element references.
-    driver.execute_script(
-        "document.querySelector('[class*=\"_buttonDropdown_\"]').click();"
-    )
-    # The listbox renders async AND populates incrementally. Poll until the
-    # option list is non-empty and STABLE (same count across consecutive reads)
-    # before returning. Returning on the first non-empty read can hand back a
-    # partially rendered list that is missing the "no threads" variants, which
-    # makes choose_option fall back to the plain (threaded) file -> wrong CAD.
     deadline = time.time() + 15
-    last_options = []
-    last_count = -1
-    stable_reads = 0
+    clicked = disabled_since = listed_since = None
+    labels = None
+    options = []
     while time.time() < deadline:
-        options = driver.execute_script(READ_OPTIONS_JS)
-        if options:
-            last_options = options
-            if len(options) == last_count:
-                stable_reads += 1
-                if stable_reads >= 2:  # unchanged for ~2 polls (~0.8s)
-                    return options
-            else:
-                last_count = len(options)
-                stable_reads = 0
-        time.sleep(0.4)
-    return last_options
+        menu = driver.execute_script(CAD_MENU_JS)
+        now = time.time()
+        if menu["disabled"]:
+            # Give a slow render a moment to enable it before giving up.
+            if disabled_since is None:
+                disabled_since = now
+            if now - disabled_since >= 2:
+                return []
+        else:
+            disabled_since = None
+            if not menu["open"] and (clicked is None or now - clicked >= 0.5):
+                # Re-query and click inside JS to avoid stale element references.
+                driver.execute_script(CLICK_CAD_MENU_JS)
+                clicked = now
+        if menu["options"]:
+            options = menu["options"]
+            if fmt and matching_option(options, fmt, want_threads):
+                return options
+            if [o["label"] for o in options] != labels:
+                labels = [o["label"] for o in options]
+                listed_since = now
+            elif now - listed_since >= 0.8:
+                return options
+        time.sleep(0.1)
+    return options
 
 
-def choose_option(options, fmt, want_threads):
+def matching_option(options, fmt, want_threads):
+    """The `fmt` option in exactly the requested threads variant, or None."""
     label_kw = FORMAT_LABEL[fmt]
     for o in options:
         text = o["label"]
@@ -382,7 +426,15 @@ def choose_option(options, fmt, want_threads):
             return o
         if not want_threads and has_no_threads:
             return o
+    return None
+
+
+def choose_option(options, fmt, want_threads):
+    chosen = matching_option(options, fmt, want_threads)
+    if chosen:
+        return chosen
     # Fallback: format requested has no separate threads variant (e.g. PDF).
+    label_kw = FORMAT_LABEL[fmt]
     for o in options:
         if label_kw in o["label"]:
             return o
@@ -413,19 +465,21 @@ def _cad_error(args, message):
     return 2
 
 
-def _load_cad_options(driver, part):
+def _load_cad_options(driver, part, fmt=None, want_threads=False):
     """Navigate to the part page and return CAD options, or None on timeout."""
     driver.get(URL.format(part=part))
     try:
-        return get_cad_options(driver)
+        return get_cad_options(driver, fmt, want_threads)
     except TimeoutException:
         return None
 
 
 def cmd_cad(args):
+    # --list wants every option, so only stop at the wanted one for a download.
+    fmt = None if args.list else args.format
     driver = make_driver(profile_dir=args.profile)
     try:
-        options = _load_cad_options(driver, args.part)
+        options = _load_cad_options(driver, args.part, fmt, args.threads)
         # Missing session → log in once (headful) and retry.
         if (options is None and login_wall_present(driver)
                 and not args.no_auto_login):
@@ -435,7 +489,7 @@ def cmd_cad(args):
                 return _cad_error(args, "login not completed — run: "
                                   "python mcmaster_scraper.py login")
             driver = make_driver(profile_dir=args.profile)
-            options = _load_cad_options(driver, args.part)
+            options = _load_cad_options(driver, args.part, fmt, args.threads)
 
         if options is None:
             if driver is not None and login_wall_present(driver):
@@ -490,6 +544,92 @@ def cmd_cad(args):
 
 
 # --------------------------------------------------------------------------- #
+# fetch
+# --------------------------------------------------------------------------- #
+
+def write_json(dest, obj):
+    """Write obj to dest as JSON, atomically (no reader sees half a file)."""
+    tmp = dest + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(obj, indent=2, ensure_ascii=False))
+    os.replace(tmp, dest)
+
+
+def _fetch_cad(driver, args, result):
+    """Download the CAD from the part page `driver` is on; fill in `result`."""
+    try:
+        options = get_cad_options(driver, args.format, args.threads)
+    except TimeoutException:
+        result["cad_error"] = ("CAD control did not render (invalid part #, "
+                               "blocked, or no CAD available for this part)")
+        return
+    if not options:
+        result["cad_error"] = "no CAD options found"
+        return
+    chosen = choose_option(options, args.format, args.threads)
+    if not chosen:
+        variant = "with threads" if args.threads else "no threads"
+        result["cad_error"] = f"no '{args.format}' ({variant}) option for this part"
+        return
+    print(f"[selected] {chosen['label']}", file=sys.stderr)
+    dest, size = download_cad(driver, chosen["path"], args.out)
+    result.update(label=chosen["label"], path=chosen["path"], file=dest, bytes=size)
+
+
+def cmd_fetch(args):
+    """`scrape` + `cad --json` for one part, in ONE browser session.
+
+    Edge starts and loads the page once instead of twice. Writes
+    <out>/<part>.json like `scrape`, downloads the CAD into <out> like `cad`,
+    and prints one JSON result: {part_number, json_file, error, label, path,
+    file, bytes, cad_error}. `error` = the scrape failed; `cad_error` = no CAD
+    was downloaded. With --result FILE the result is also written to FILE
+    BEFORE Edge is closed (closing it takes ~2 s), so a caller can watch for
+    the file instead of waiting for this process to exit.
+    """
+    result = {"part_number": args.part, "json_file": None, "error": None,
+              "label": None, "path": None, "file": None, "bytes": None,
+              "cad_error": None}
+    driver = None
+    try:
+        driver = make_driver(profile_dir=args.profile)
+        print(f"[scraping] {args.part} ...", file=sys.stderr)
+        data = scrape_part(driver, args.part)
+        # Missing session -> log in once (headful) and retry.
+        if _needs_login(data) and not args.no_auto_login:
+            driver.quit()
+            driver = None  # profile lock released for the login window
+            if interactive_login(args.profile):
+                driver = make_driver(profile_dir=args.profile)
+                data = scrape_part(driver, args.part)
+        os.makedirs(args.out, exist_ok=True)
+        json_file = os.path.join(args.out, f"{args.part}.json")
+        write_json(json_file, data)
+        result["json_file"] = json_file
+        print(f"[wrote] {json_file}", file=sys.stderr)
+        if data.get("error"):
+            result["error"] = data["error"]
+        else:
+            _fetch_cad(driver, args, result)
+    except Exception as ex:  # report it in the result, not just a traceback
+        traceback.print_exc()
+        message = (str(ex).strip().splitlines() or [type(ex).__name__])[0]
+        if result["json_file"] and not result["error"]:
+            result["cad_error"] = message
+        else:
+            result["error"] = message
+    finally:
+        try:
+            if args.result:
+                write_json(args.result, result)
+            print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
+        finally:
+            if driver is not None:
+                driver.quit()
+    return 2 if result["error"] or result["cad_error"] else 0
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -533,6 +673,24 @@ def build_parser():
                    help="don't open a login window if the session is missing; "
                         "just report the error")
     c.set_defaults(func=cmd_cad)
+
+    f = sub.add_parser("fetch",
+                       help="scrape + download the CAD for one part in one browser session")
+    f.add_argument("part", help="part number, e.g. 91274A004")
+    f.add_argument("--out", default=".",
+                   help="directory for <part>.json and the CAD file (default: current)")
+    f.add_argument("--result", metavar="FILE",
+                   help="also write the result JSON to FILE, before Edge is closed")
+    f.add_argument("--profile", default=DEFAULT_PROFILE,
+                   help=f"Edge profile dir (default: {DEFAULT_PROFILE})")
+    f.add_argument("--format", default="parasolid", choices=sorted(FORMAT_LABEL),
+                   help="CAD format (default: parasolid)")
+    f.add_argument("--threads", action="store_true",
+                   help="get the WITH-threads variant (default: no threads)")
+    f.add_argument("--no-auto-login", action="store_true",
+                   help="don't open a login window if the session is missing; "
+                        "just report the error")
+    f.set_defaults(func=cmd_fetch)
 
     return ap
 

@@ -2,12 +2,17 @@
 import json
 import os
 import subprocess
+import time
 
 from lib.paths import ROOT
 
 # Vendored McMaster scraper (under lib/scraper) + output dir.
 SCRAPER_SCRIPT = os.path.join(ROOT, "lib", "scraper", "mcmaster_scraper.py")
 MCMASTER_OUT = r"C:\TEMP\MCMASTER"
+
+# Seconds to wait for the scraper: room for a McMaster sign-in (its login
+# window waits up to 5 minutes) plus the scrape and download themselves.
+FETCH_TIMEOUT = 420
 
 
 def scraper_python():
@@ -36,42 +41,50 @@ def scraper_python():
     return "python"
 
 
-def run_scraper(sub_args, timeout=300):
-    cmd = [scraper_python(), SCRAPER_SCRIPT] + sub_args
-    return subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        universal_newlines=True, timeout=timeout)
+def start_fetch(part_no, out_dir=MCMASTER_OUT, log=None):
+    """Start fetching `part_no` in the background; finish with wait_for_fetch().
 
-
-def cad_failure_reason(proc):
-    """Human-readable reason a `cad ... --json` run failed.
-
-    With --json the scraper reports its own errors ("no CAD options found",
-    "no 'parasolid' (no threads) option for this part", "CAD control did not
-    render ...") as JSON on *stdout* and leaves stderr empty, so read stdout
-    first and only fall back to stderr / the bare exit code.
+    Runs the vendored scraper's `fetch` command in an external interpreter as a
+    subprocess: one Edge session that writes <dir>/<pn>.json and downloads the
+    default 3-D Parasolid, no-threads *.X_T into <dir>. It writes its result to
+    <dir>/<pn>.result.json before closing Edge, and its output to <dir>/<pn>.log.
+    NX is not blocked while it runs, so the caller can show a dialog meanwhile.
+    Returns the job for wait_for_fetch(). Never raises.
     """
+    _log = log or (lambda m: None)
+    job = {"proc": None, "error": None, "started": time.time(),
+           "result_file": os.path.join(out_dir, part_no + ".result.json"),
+           "log_file": os.path.join(out_dir, part_no + ".log")}
+    _log("  running lib/scraper/mcmaster_scraper.py ({0})".format(scraper_python()))
     try:
-        message = (json.loads(proc.stdout) or {}).get("error")
-    except ValueError:
-        message = None
-    if message:
-        return message
-    stderr = (proc.stderr or "").strip()
-    if stderr:
-        return stderr
-    return "CAD download exited {0}".format(proc.returncode)
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as ex:
+        job["error"] = "cannot create {0}: {1}".format(out_dir, ex)
+        return job
+
+    _log("  > fetch {0} --out {1}  (scrape + no-threads Parasolid, one Edge "
+         "session)".format(part_no, out_dir))
+    try:
+        if os.path.exists(job["result_file"]):
+            os.remove(job["result_file"])  # stale, from an earlier run
+        with open(job["log_file"], "w", encoding="utf-8") as log_handle:
+            job["proc"] = subprocess.Popen(
+                [scraper_python(), SCRAPER_SCRIPT, "fetch", part_no,
+                 "--out", out_dir, "--result", job["result_file"]],
+                stdin=subprocess.DEVNULL, stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as ex:
+        job["error"] = "failed to run scraper: {0}".format(ex)
+    return job
 
 
-def fetch_mcmaster(part_no, out_dir=MCMASTER_OUT, log=None):
-    """Scrape property data (JSON) and download the no-threads Parasolid CAD.
+def wait_for_fetch(job, log=None, timeout=FETCH_TIMEOUT):
+    """Wait for a start_fetch() job and return what it fetched.
 
-    Runs the vendored scraper in an external interpreter as a subprocess:
-      1. `scrape <pn> --out <dir>`  -> writes <dir>/<pn>.json
-      2. `cad <pn> --out <dir> --json` -> downloads the default 3-D Parasolid,
-         no-threads *.X_T into <dir>
-
-    Returns a dict:
+    Returns as soon as the scraper's result file appears, without waiting the
+    ~2 s Edge takes to close afterwards. Returns a dict:
       {"data": <scraped dict or None>, "json_file": path or None,
        "cad_file": path or None, "error": <scrape error or None>,
        "cad_error": <CAD error or None>}
@@ -82,60 +95,73 @@ def fetch_mcmaster(part_no, out_dir=MCMASTER_OUT, log=None):
     result = {"data": None, "json_file": None, "cad_file": None,
               "error": None, "cad_error": None}  # type: dict
     _log = log or (lambda m: None)
-    _log("  running lib/scraper/mcmaster_scraper.py ({0})".format(scraper_python()))
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-    except OSError as ex:
-        result["error"] = "cannot create {0}: {1}".format(out_dir, ex)
+    if job["error"]:
+        result["error"] = job["error"]
         return result
 
-    # 1. Scrape structured data to <out_dir>/<part_no>.json
-    _log("  > scrape {0} --out {1}  (opens Edge; may take a moment)".format(
-        part_no, out_dir))
-    try:
-        proc = run_scraper(["scrape", part_no, "--out", out_dir])
-    except (OSError, subprocess.SubprocessError) as ex:
-        result["error"] = "failed to run scraper: {0}".format(ex)
-        return result
-    if proc.returncode != 0:
-        result["error"] = "scrape exited {0}: {1}".format(
-            proc.returncode, (proc.stderr or "").strip())
-        return result
+    proc, result_file = job["proc"], job["result_file"]
+    while not os.path.exists(result_file):
+        if proc.poll() is not None:
+            if os.path.exists(result_file):
+                break  # written just before it exited
+            result["error"] = "scraper exited {0}: {1} (log: {2})".format(
+                proc.returncode, _last_log_line(job["log_file"]), job["log_file"])
+            return result
+        if time.time() - job["started"] > timeout:
+            proc.kill()
+            result["error"] = "scraper timed out after {0} s (log: {1})".format(
+                timeout, job["log_file"])
+            return result
+        time.sleep(0.1)
+    _log("  scraper done in {0:.1f} s".format(time.time() - job["started"]))
 
-    json_file = os.path.join(out_dir, part_no + ".json")
-    if not os.path.exists(json_file):
-        result["error"] = "scrape produced no JSON at {0}".format(json_file)
-        return result
     try:
-        with open(json_file, encoding="utf-8") as handle:
-            data = json.load(handle)
+        with open(result_file, encoding="utf-8") as handle:
+            fetched = json.load(handle)
     except (OSError, ValueError) as ex:
-        result["error"] = "cannot read scraped JSON: {0}".format(ex)
-        return result
-    result["json_file"] = json_file
-    result["data"] = data
-    if data.get("error"):
-        result["error"] = "scrape error: {0}".format(data["error"])
+        result["error"] = "cannot read scraper result: {0}".format(ex)
         return result
 
-    # 2. Download the CAD (default = 3-D Parasolid, no threads, *.X_T)
-    _log("  > cad {0} --out {1}  (downloading no-threads Parasolid)".format(
-        part_no, out_dir))
-    try:
-        cad_proc = run_scraper(["cad", part_no, "--out", out_dir, "--json"])
-    except (OSError, subprocess.SubprocessError) as ex:
-        result["cad_error"] = "failed to run CAD download: {0}".format(ex)
-        return result
-    if cad_proc.returncode == 0:
+    json_file = fetched.get("json_file")
+    if json_file:
         try:
-            result["cad_file"] = json.loads(cad_proc.stdout).get("file")
-        except ValueError:
-            result["cad_error"] = "could not parse CAD output"
-        if not result["cad_error"] and not result["cad_file"]:
-            result["cad_error"] = "CAD download reported no file"
-    else:
-        result["cad_error"] = cad_failure_reason(cad_proc)
+            with open(json_file, encoding="utf-8") as handle:
+                result["data"] = json.load(handle)
+        except (OSError, ValueError) as ex:
+            result["error"] = "cannot read scraped JSON: {0}".format(ex)
+            return result
+        result["json_file"] = json_file
+    if fetched.get("error"):
+        result["error"] = "scrape error: {0}".format(fetched["error"])
+        return result
+    if result["data"] is None:
+        result["error"] = "scrape produced no JSON"
+        return result
+
+    result["cad_file"] = fetched.get("file")
+    result["cad_error"] = fetched.get("cad_error")
+    if not result["cad_file"] and not result["cad_error"]:
+        result["cad_error"] = "CAD download reported no file"
     return result
+
+
+def fetch_mcmaster(part_no, out_dir=MCMASTER_OUT, log=None):
+    """Scrape property data (JSON) and download the no-threads Parasolid CAD.
+
+    start_fetch() + wait_for_fetch() in one call; returns wait_for_fetch()'s
+    dict. Never raises.
+    """
+    return wait_for_fetch(start_fetch(part_no, out_dir, log), log)
+
+
+def _last_log_line(log_file):
+    """Last non-empty line of the scraper's log (e.g. a traceback's error)."""
+    try:
+        with open(log_file, encoding="utf-8", errors="replace") as handle:
+            lines = [line.strip() for line in handle if line.strip()]
+    except OSError:
+        return "(no log)"
+    return lines[-1] if lines else "(empty log)"
 
 
 def build_description(data):

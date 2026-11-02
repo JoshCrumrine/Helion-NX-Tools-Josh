@@ -16,7 +16,7 @@ Helion-NX-Tools/
 │   │   └── README.md            How to set up and run the Create-McMaster-Part tool
 │   ├── Check-Part-Exists/       Diagnostic: is an item id already in Teamcenter?
 │   ├── List-Assembly-Components/ Write the assembly tree (components, bodies, materials) to a text file
-│   ├── Export-Body-DXF/         One DXF per solid body, viewed square-on to its largest flat face, in output/
+│   ├── Export-Body-DXF/         One DXF per solid body, viewed square-on to its largest flat face, in output/dxf/
 │   ├── Env-Probe/               Diagnostic: print what NX sees (script path, UGII_* vars, PYTHONPATH, sys.path)
 │   ├── Assign-Material/         Assign one library material to the bodies you select in the current part
 │   ├── Color-By-Material/       Color every body by its NX material, from Materials/NX_Materials.csv
@@ -71,14 +71,16 @@ the folder tree and adds it to `sys.path`, so it finds `lib/` and\
   body by its NX material using the hex codes in `Materials/NX_Materials.csv`.\
   `color_by_material.py` clears assembly color overrides first;\
   `color_by_material_asm_leave_color.py` leaves them. `assign_and_color_materials.py`\
-  also prompts for a material for each body that has none, assigns it, then colors it.\
+  also prompts for a material for each body that has none, assigns it, then colors it, and\
+  updates the mass properties of those parts and the assemblies holding them.\
   Modifies the component parts (not saved automatically).
 - **[Assign Material](NX-Scripts/Assign-Material/README.md)** — assigns one material from the library
   (search box + list dialog) to the bodies you select in the current part, replacing any material they
   already have, colors them to match and updates the part's mass properties. Highlights the bodies; one undo step; nothing saved.
 - **[Export Body DXF](NX-Scripts/Export-Body-DXF/README.md)** — for each solid body of the part, saves a view square-on
   to its largest flat face (`DXF_<BODYNAME>`, zoomed to fit) and exports the body to
-  `output/<partID>_<revision>_<bodyname>.dxf` with all edges shown. Not yet confirmed in NX.
+  `output/dxf/<partID>.<revision>-UNRELEASED.dxf` (`_<bodyname>` added when the part has several
+  solid bodies) with all edges shown. Not yet confirmed in NX.
 - **[Env Probe](NX-Scripts/Env-Probe/README.md)** — diagnostic that prints what NX sees\
   when it runs a script (script folder, `UGII_*` variables, `PYTHONPATH`, `sys.path`) to\
   trace the "Unable to append module directory path in PYTHONPATH" warning.

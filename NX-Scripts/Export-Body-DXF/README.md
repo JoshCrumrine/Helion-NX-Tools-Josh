@@ -19,10 +19,14 @@ Script: `NX-Scripts/Export-Body-DXF/export_body_dxf.py`. Logic: `lib/body_dxf.py
    If the largest face is curved (a cylinder, say) it has no single normal, so the largest **flat** face is used
    and the listing says so. A body with **no** flat face is skipped and listed.
 3. **Exports the body only** to DXF through that view: 2D, model data, wireframe with every edge visible.
-4. Names the file **`<partID>_<revision>_<bodyname>.dxf`** in the repo's **`output/`** folder (git-ignored).
+4. Names the file **`<partID>.<revision>-UNRELEASED.dxf`** in the repo's **`output/dxf/`** folder (git-ignored;
+   STEP files from [Export-STEP](../Export-STEP/README.md) go to `output/step/` beside it), the same form as the
+   STEP and PDF exports. A part with more than one solid body gets **`_<bodyname>`** added to each file
+   (`<partID>.<revision>-UNRELEASED_<bodyname>.dxf`), so the files do not overwrite each other.
    Part ID and revision are the `DB_PART_NO` and `DB_PART_REV` attributes; if either is missing the part name
-   (`1150201-500/01` → `1150201-500` and `01`) is used and the listing notes it. A body name used twice gets
-   `_2`, `_3`; an existing file of the same name is overwritten.
+   (`1150201-500/01` → `1150201-500` and `01`) is used and the listing notes it. A name used twice gets
+   `_2`, `_3`; an existing file of the same name is overwritten. `SUFFIX` at the top of `lib/body_dxf.py` sets
+   the `UNRELEASED` part (`""` leaves it out).
 
 ## Good to know
 

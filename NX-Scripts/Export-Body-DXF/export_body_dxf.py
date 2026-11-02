@@ -3,10 +3,11 @@
 # Created: 2026-10-27
 # Exports one DXF per solid body of the WORK part. For each body: measure every face, take the
 # largest flat face, save a view looking straight at it (zoomed to fit) called DXF_<BODYNAME>, export
-# the body to DXF through that view with all edges shown, as output/<partID>_<revision>_<bodyname>.dxf
-# in the repo's output folder. No feature Builder exists for saving views or the DXF exporter, so
-# the views are not features (each one is its own undo step). See README.md in this folder and
-# lib/body_dxf.py for the implementation.
+# the body to DXF through that view with all edges shown, as
+# output/dxf/<partID>.<revision>-UNRELEASED.dxf in the repo's output folder (with _<bodyname> added
+# when the part has several solid bodies). No feature Builder exists for saving views or the DXF
+# exporter, so the views are not features (each one is its own undo step). See README.md in this
+# folder and lib/body_dxf.py for the implementation.
 import os
 import sys
 

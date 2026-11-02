@@ -17,7 +17,11 @@
 # color_by_material.py. Assembly-level color overrides on components are cleared
 # first, also as in color_by_material.py.
 #
-# This MODIFIES the component parts: both the material assignment and the color are
+# Each part that gets a material then has its mass properties updated (Analysis > Mass
+# Properties > Update Now, as Assign Material does), and so does every assembly that holds
+# it, deepest first, so the weights use the new materials.
+#
+# This MODIFIES the component parts: the material assignment, the color and the weight are
 # left unsaved. See README.md in this folder, and lib/color_by_material.py for the
 # implementation.
 import os

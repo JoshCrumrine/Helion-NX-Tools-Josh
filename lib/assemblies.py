@@ -167,3 +167,27 @@ def assign_material(part, body, name, libraries=()):
     if get_body_material(body) is None:
         return False, "NX accepted the assignment but the body still shows no material"
     return True, ""
+
+
+def update_mass_properties(part):
+    """Update the mass properties (weight) of `part` so they use the materials its bodies have now.
+
+    Same as Analysis > Mass Properties > Update Now: a MassPropertiesBuilder on the part, UpdateNow().
+    There is nothing to commit, so no feature is created. For an assembly part it is the assembly's
+    weight that is updated. Call it while `part` is the work part, as after assign_material.
+
+    Returns (True, "") or (False, what NX said). Never raises.
+    """
+    builder = None
+    try:
+        builder = part.PropertiesManager.CreateMassPropertiesBuilder([part])
+        builder.UpdateNow()
+        return True, ""
+    except Exception as ex:
+        return False, str(ex)
+    finally:
+        if builder is not None:
+            try:
+                builder.Destroy()
+            except Exception:
+                pass

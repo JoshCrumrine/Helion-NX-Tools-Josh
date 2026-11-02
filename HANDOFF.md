@@ -71,9 +71,10 @@ This is the recorded journal wired to the scraper. `main()` does:
    (`open_teamcenter_part` → `Parts.OpenActiveDisplay(spec, AllowAdditional)`,
    using the `ItemRevisionCliSpec` the check returned). If it can't be opened, an
    error box is shown. Nothing is created or scraped. See gotcha #9.
-2. **`fetch_mcmaster(pn)`** — subprocess to the external scraper: `scrape --out
-   C:\TEMP\MCMASTER` (writes `<pn>.json`) then `cad --out C:\TEMP\MCMASTER
-   --json` (downloads the default 3-D Parasolid, **no-threads** `*.X_T`).
+2. **`fetch_mcmaster(pn)`** — runs the external scraper's `fetch` command, one Edge
+   session that writes `<pn>.json` and downloads the default 3-D Parasolid,
+   **no-threads** `*.X_T` into `C:\TEMP\MCMASTER` (about 3-4 s). There is no
+   notice for this step; NX is busy until the part-name prompt (step 4) appears.
 2b. **No-CAD prompt** — if no `*.X_T` was downloaded (part has no 3-D model, e.g.
    `5887K51`; no no-threads Parasolid variant; download failed), show the reason
    and ask (`ask_yes_no`, `lib/nx_dialogs.py`) whether to create the part
@@ -114,13 +115,15 @@ Edge browser, which are not available in NX's embedded Python.
 - Setup (once): run `setup.bat` at the repo root (creates `.venv`, installs
   `requirements.txt` behind the corporate proxy, and runs the
   McMaster `login` to cache the session).
-- `fetch_mcmaster()` returns a dict with `data` / `json_file` / `cad_file` and
-  `error` / `cad_error`; it never raises. Either error aborts creation: the
-  scrape supplies the description, and a part with no CAD has nothing to import.
-  Note the scraper writes its `cad --json` errors to **stdout**, not stderr, so
-  `_cad_failure_reason()` reads stdout first to get a usable message
-  (e.g. "no 'parasolid' (no threads) option for this part") instead of a bare
-  exit code.
+- `wait_for_fetch()` (and the one-call `fetch_mcmaster()`) returns a dict with
+  `data` / `json_file` / `cad_file` and `error` / `cad_error`; it never raises.
+  Either error aborts creation: the scrape supplies the description, and a part
+  with no CAD has nothing to import.
+- The scraper reports its outcome, including errors such as "no 'parasolid' (no
+  threads) option for this part", in `C:\TEMP\MCMASTER\<pn>.result.json`, which
+  it writes **before** closing Edge. `wait_for_fetch()` returns as soon as that
+  file appears instead of waiting the ~2 s Edge takes to quit. The scraper's
+  console output goes to `C:\TEMP\MCMASTER\<pn>.log`.
 
 ## How to run
 
@@ -130,8 +133,12 @@ Edge browser, which are not available in NX's embedded Python.
 3. **File → Execute → NX Open…** → select
    `NX-Scripts/Create-McMaster-Part/CREATE_MCMASTER_PART.py`.
 4. Enter the McMaster part number. The tool scrapes the data, downloads the CAD,
-   prompts for the part name, creates the `BE9_COTS` part, and imports the CAD;
-   progress is logged to the Listing Window.
+   prompts for the part name, creates the `BE9_COTS` part, and imports the CAD.
+   A run that ends with the part open (created, or already in Teamcenter and
+   opened) shows no window. Otherwise (cancelled or failed) its log goes to the
+   Listing Window at the end. The log is held in `DeferredListing`
+   (`lib/nx_dialogs.py`) because, written earlier, the Information window pops
+   up over the dialogs and takes their keyboard focus.
 
 ## Gotchas discovered (hard-won — don't re-learn these)
 

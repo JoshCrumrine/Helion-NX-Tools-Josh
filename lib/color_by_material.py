@@ -12,7 +12,7 @@ import os
 import NXOpen
 
 from lib.assemblies import (assign_material, find_display_body, get_bodies, get_body_material,
-                            walk_components)
+                            update_mass_properties, walk_components)
 from lib.colors import clear_component_color_override, color_number_from, set_body_color
 from lib.nx_dialogs import UserCancelled, choose_from_list
 
@@ -142,7 +142,7 @@ def _unhighlight(obj):
 
 
 def _assign_missing_materials(session, display_part, proto, comp, names, dialog,
-                              state, assigned, failures, libraries=None):
+                              state, assigned, failures, libraries=None, mass_updates=None):
     """Ask for, and assign, a material for every body of `proto` that has none.
 
     One dialog per body. Cancel (or OK with nothing selected) skips that body; the
@@ -152,12 +152,17 @@ def _assign_missing_materials(session, display_part, proto, comp, names, dialog,
     each body's material again, so a body that was assigned simply gets that
     material's color, and one that was not falls back to the no-material color.
 
+    If any body got a material, the part's mass properties are then updated (as Assign
+    Material does) so its weight uses the new densities; (part, ok, why) is appended to
+    `mass_updates`.
+
     Assigning needs the owning part to be the work part, so it is made the work part
     for the duration and the displayed part is restored afterwards.
     """
     missing = [b for b in proto.Bodies if get_body_material(b) is None]
     if not missing or state["skip_all"] or state["cancelled"]:
         return
+    assigned_before = len(assigned)
     try:
         if comp is not None:
             session.Parts.SetWorkComponent(comp)
@@ -204,11 +209,48 @@ def _assign_missing_materials(session, display_part, proto, comp, names, dialog,
                 assigned.append((proto.Leaf, body_name, chosen))
             else:
                 failures.append((proto.Leaf, body_name, chosen, why))
+        if len(assigned) > assigned_before:       # also after a cancel: what was assigned stays
+            ok, why = update_mass_properties(proto)
+            if mass_updates is not None:
+                mass_updates.append((proto.Leaf, ok, why))
     except Exception as ex:
         failures.append((proto.Leaf, "(part)", "",
                          "could not make it the work part: {0}".format(ex)))
     finally:
         session.Parts.SetWork(display_part)
+
+
+def _update_holding_assemblies(session, display_part, changed, mass_updates):
+    """Update the mass properties of every assembly that holds a part in `changed` (full paths of
+    the parts that got new materials), so the assemblies' weights add up the new part weights:
+    subassemblies deepest first, each made the work part while it is updated, then the displayed
+    part. Appends (part, ok, why) to `mass_updates`."""
+    holders = {}         # full path -> (depth, subassembly part, one of its components)
+    for comp, depth in walk_components():
+        try:
+            if comp.IsSuppressed or comp.Prototype is None or comp.Prototype.FullPath not in changed:
+                continue
+            parent = comp.Parent
+            while parent is not None and depth > 1:     # depth 0 is the displayed part: done last
+                depth -= 1
+                key = parent.Prototype.FullPath
+                if key not in holders or holders[key][0] < depth:
+                    holders[key] = (depth, parent.Prototype, parent)
+                parent = parent.Parent
+        except Exception:
+            continue
+    for _depth, part, comp in sorted(holders.values(), key=lambda h: -h[0]):
+        try:
+            session.Parts.SetWorkComponent(comp)
+            ok, why = update_mass_properties(part)
+        except Exception as ex:
+            ok, why = False, "could not make it the work part: {0}".format(ex)
+        finally:
+            session.Parts.SetWork(display_part)
+        mass_updates.append((part.Leaf, ok, why))
+    if changed - {display_part.FullPath}:               # it holds changed components
+        ok, why = update_mass_properties(display_part)
+        mass_updates.append((display_part.Leaf, ok, why))
 
 
 def run(clear_overrides, assign_missing=False, material_dialog=None):
@@ -219,8 +261,10 @@ def run(clear_overrides, assign_missing=False, material_dialog=None):
 
     assign_missing: when a body has no material, prompt for one from the material
     library (the BlockStyler dialog file `material_dialog`), assign it, and then
-    color the body with that material's color. This MODIFIES the parts (the material
-    assignment, like the coloring, is not saved).
+    color the body with that material's color. The mass properties of each part that
+    got a material are then updated, and those of the assemblies holding it, so the
+    weights use the new materials. This MODIFIES the parts (the material assignment,
+    like the coloring, is not saved).
     """
     session = NXOpen.Session.GetSession()
     lw = session.ListingWindow
@@ -252,6 +296,8 @@ def run(clear_overrides, assign_missing=False, material_dialog=None):
     state = {"skip_all": False, "cancelled": False}
     assigned = []         # (part, body, material) assigned from the prompt
     assign_failures = []  # (part, body, material, reason)
+    changed = set()       # full paths of the parts that got a material from the prompt
+    mass_updates = []     # (part, ok, why) for each part whose mass properties were updated
 
     # One entry per distinct part: first component using it, and how many
     # instances there are.
@@ -293,9 +339,12 @@ def run(clear_overrides, assign_missing=False, material_dialog=None):
             not_processed += 1
             continue
         if assign_missing and not state["skip_all"]:
+            assigned_before = len(assigned)
             _assign_missing_materials(session, display_part, proto, comp, material_names,
                                       material_dialog, state, assigned, assign_failures,
-                                      material_libraries)
+                                      material_libraries, mass_updates)
+            if len(assigned) > assigned_before:
+                changed.add(proto.FullPath)
         # (palette number or None, translucency or None) -> [(body, material)]
         by_style = {}
         for body in proto.Bodies:
@@ -340,6 +389,9 @@ def run(clear_overrides, assign_missing=False, material_dialog=None):
                     _body_name(body), material, ", ".join(detail),
                     "  (used x{0})".format(instances) if instances > 1 else ""))
 
+    if changed:
+        _update_holding_assemblies(session, display_part, changed, mass_updates)
+
     if state["cancelled"]:
         lw.WriteLine("")
         lw.WriteLine("*** CANCELLED by you. Nothing more was changed; what was already done was kept. ***")
@@ -360,6 +412,17 @@ def run(clear_overrides, assign_missing=False, material_dialog=None):
             lw.WriteLine("Could not assign:")
             for part_name, body_name, material, why in assign_failures:
                 lw.WriteLine("  {0} / {1} -> {2}: {3}".format(part_name, body_name, material, why))
+        updated = list(dict.fromkeys(name for name, ok, _why in mass_updates if ok))
+        if updated:
+            lw.WriteLine("Mass properties updated for the new materials ({0} part{1}):".format(
+                len(updated), "" if len(updated) == 1 else "s"))
+            for name in updated:
+                lw.WriteLine("  {0}".format(name))
+        failed = [(name, why) for name, ok, why in mass_updates if not ok]
+        if failed:
+            lw.WriteLine("Could not update the mass properties:")
+            for name, why in failed:
+                lw.WriteLine("  {0}: {1}".format(name, why))
     if read_only:
         lw.WriteLine("Read-only parts (changed in this session, cannot be saved as-is):")
         for name in read_only:

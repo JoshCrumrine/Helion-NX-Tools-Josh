@@ -4,8 +4,9 @@ Implementation notes and maintenance guide for whoever picks this up next.
 
 ## TL;DR
 
-- One file: [mcmaster_scraper.py](mcmaster_scraper.py), three subcommands
-  (`login`, `scrape`, `cad`). Pure Selenium + headless Edge. No server, no DB.
+- One file: [mcmaster_scraper.py](mcmaster_scraper.py), four subcommands
+  (`login`, `scrape`, `cad`, and `fetch` = scrape + cad in one browser session).
+  Pure Selenium + headless Edge. No server, no DB.
 - **Login wall (added 2026-07-09):** McMaster now shows a "To continue
   browsing, please log in" interstitial for anonymous visitors — **intermittently**
   (seen on a fresh profile in one run, absent in the next), so it is not a hard
@@ -42,16 +43,21 @@ Implementation notes and maintenance guide for whoever picks this up next.
 ### `scrape` command (`cmd_scrape` → `scrape_part`)
 1. `driver.get(url)`, then `WebDriverWait` for `[class*="_productDetailHeaders_"]`
    (proves the SPA has rendered the product).
-2. `time.sleep(2)` to let specs/price finish populating.
-3. One `execute_script(EXTRACT_JS)` returns the whole structured object. Doing
-   it in a single in-browser call avoids `StaleElementReferenceException` — the
-   SPA mutates the DOM after first paint, so holding Python-side element handles
-   across calls fails.
+2. `read_product_data`: one `execute_script(EXTRACT_JS)` returns the whole
+   structured object. Doing it in a single in-browser call avoids
+   `StaleElementReferenceException` — the SPA mutates the DOM after first paint,
+   so holding Python-side element handles across calls fails. It re-reads until
+   two reads 0.3 s apart agree (at most 2 s), because the SPA re-renders the
+   page ~0.3 s after first paint (the spec rows briefly empty out).
 
 ### `cad` command (`cmd_cad`)
-1. `get_cad_options` — waits for the `_buttonDropdown_` combobox, **re-queries
-   and clicks it inside JS** (not via a held handle — it goes stale), then polls
-   `READ_OPTIONS_JS` until the `[role="listbox"]` populates.
+1. `get_cad_options` — waits for the `_buttonDropdown_` combobox, then polls
+   `CAD_MENU_JS` every 0.1 s, **re-querying and clicking the combobox inside JS**
+   (not via a held handle — it goes stale) whenever its `[role="listbox"]` is
+   closed: the ~0.3 s re-render closes a dropdown opened before it. Returns as
+   soon as the wanted option is listed (`matching_option`), otherwise once the
+   list is unchanged for 0.8 s (it can populate incrementally), and `[]` if
+   the combobox stays `aria-disabled="true"` for 2 s (no CAD for the part).
 2. Each `<li role="option">` carries the download path in its **`value`**
    attribute, e.g.
    `/mvC/Library/CAD2/<date>/<hash>/91274A004_NO THREADS_<name>.X_T`.
@@ -64,6 +70,28 @@ Implementation notes and maintenance guide for whoever picks this up next.
    `base64.b64decode` → written to disk. Using the page's own fetch means
    McMaster's session cookies and same-origin checks are satisfied
    automatically; a bare external GET may be rejected.
+
+### `fetch` command (`cmd_fetch`)
+`scrape_part`, then the `cad` steps on the page that is already loaded: one Edge
+launch and one page load instead of two. Writes `<pn>.json`, downloads the CAD,
+and reports both in one result JSON (stdout, and `--result FILE`). FILE is
+written *before* `driver.quit()`, which takes ~2.4 s (Edge closing with the
+persistent profile, plus Selenium's `Service.stop()` sleeping a full 1 s while
+the driver port is still open). Exceptions go into the result's `error` /
+`cad_error` (traceback to stderr) rather than ending the run without a result.
+`lib/mcmaster.py` watches for FILE and does not wait for the process to exit.
+On Windows Selenium starts `msedgedriver` with `close_fds=False`, so the driver
+inherits the scraper's stdout handle: a caller that reads stdout to EOF (as
+`subprocess.run` does) waits for Edge to close anyway. That is why the result
+goes through a file and not stdout.
+
+### Timing (measured 2026-11-01, warm profile)
+Python + Selenium import + Selenium Manager ≈ 0.35 s; Edge launch ≈ 1.1 s;
+`driver.get` → product header ≈ 0.8-1.3 s; header, specs, price and the CAD
+combobox render together and the data is already final; the CAD options are
+listed ~0.07 s after the click; download < 0.1 s; `driver.quit()` ≈ 2.4 s.
+`fetch` hands back its result in ~3.5 s (about 15 s with the old `scrape` +
+`cad` pair and their fixed sleeps).
 
 ## Key DOM facts (verified 2026-06-21, part 91274A004)
 
@@ -79,6 +107,7 @@ Implementation notes and maintenance guide for whoever picks this up next.
 | Spec label / value | `[class*="-spec-row-label"]` / `[class*="-spec-row-value"]` | `div` |
 | CAD dropdown button | `[class*="_buttonDropdown_"]` | `button[role=combobox]` |
 | CAD options | `[role="listbox"] li[role="option"]` | path in `value` attr |
+| No CAD for the part | same combobox with `aria-disabled="true"`, text "Select a CAD file type" | e.g. `5887K51` (verified 2026-11-01) |
 
 **Spec grouping quirk:** the spec table mixes heading rows, *indented* rows
 that belong under a heading, and top-level rows. The indent is signalled by

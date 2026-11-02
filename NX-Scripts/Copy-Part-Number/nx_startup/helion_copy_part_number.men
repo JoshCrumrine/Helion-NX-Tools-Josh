@@ -1,0 +1,23 @@
+! Copy Part Number: defines the HELION_COPY_PART_NUMBER and HELION_COPY_PART_NAME buttons and puts
+! them in the Edit menu, just below Copy. helion_copy_part_number.py adds the same buttons to the
+! right-click menu of assembly components. They run copy_part_number.py and copy_part_name.py.
+!
+! Install-Copy-Part-Number.bat writes this file to %LOCALAPPDATA%\Siemens\NX2506\startup, where NX
+! reads it at startup, with the full path of each script filled in on its ACTIONS line.
+VERSION 120
+
+EDIT UG_GATEWAY_MAIN_MENUBAR
+
+AFTER UG_EDIT_COPY
+  BUTTON HELION_COPY_PART_NUMBER
+  LABEL Copy Part &Number
+  MESSAGE Copies the part number (item ID) of the selected components to the clipboard.
+  BITMAP copy
+  ACTIONS @COPY_PART_NUMBER_SCRIPT@
+
+  BUTTON HELION_COPY_PART_NAME
+  LABEL Copy Part N&ame
+  MESSAGE Copies the part name (item name) of the selected components to the clipboard.
+  BITMAP copy
+  ACTIONS @COPY_PART_NAME_SCRIPT@
+END_OF_AFTER

@@ -6,7 +6,7 @@ list-with-search dialog style as Color-By-Material's ASSIGN_MATERIAL_dialog.dlx)
 import NXOpen
 import NXOpen.UF          # NX only creates NXOpen.UF once it is imported explicitly
 
-from lib.assemblies import assign_material, get_body_material
+from lib.assemblies import assign_material, get_body_material, update_mass_properties
 from lib.color_by_material import (load_material_libraries, load_material_names,
                                    load_material_styles)
 from lib.colors import color_number_from, set_body_color
@@ -120,24 +120,13 @@ def _apply_material_color(part, targets, result, material):
 
 
 def _update_mass_properties(session, part, result):
-    """Update the part's mass properties (weight) so they use the new materials.
-
-    Same as Analysis > Mass Properties > Update Now: a MassPropertiesBuilder on the part, UpdateNow().
-    There is nothing to commit, so no feature is created. A failure is recorded, not raised.
-    """
-    builder = None
-    try:
-        builder = part.PropertiesManager.CreateMassPropertiesBuilder([part])
-        builder.UpdateNow()
+    """Update the part's mass properties (weight) so they use the new materials
+    (lib.assemblies.update_mass_properties). A failure is recorded, not raised."""
+    ok, why = update_mass_properties(part)
+    if ok:
         result["mass_updated"] = True
-    except Exception as ex:
-        result["mass_error"] = str(ex)
-    finally:
-        if builder is not None:
-            try:
-                builder.Destroy()
-            except Exception:
-                pass
+    else:
+        result["mass_error"] = why
 
 
 # ----------------------------------------------------------------------------- assigning

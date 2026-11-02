@@ -23,12 +23,13 @@ the McMaster/COTS flow (part number → scrape → create → import).
 3. Enter the **McMaster part number** when prompted. If that part already exists in
    Teamcenter the tool opens it and stops (see Notes).
 4. The tool scrapes the product data, downloads the no-threads Parasolid CAD to
-   `C:\TEMP\MCMASTER`, and shows a **Part Name** dialog pre-filled with the
-   description (edit if you like).
+   `C:\TEMP\MCMASTER` (NX is busy for a few seconds), and shows a **Part Name** dialog
+   pre-filled with the description (edit if you like).
 5. It creates the `BE9_COTS` part, sets its attributes, and imports the CAD, moves the
-   imported bodies to **layer 71**, and **zooms the view to fit** them. Progress is written to
-   the **Listing Window**, which ends with *"Import was successful. You can close this
-   window."* (or *"Part created (no CAD was imported)..."* if you chose to skip the CAD).
+   imported bodies to **layer 71**, and **zooms the view to fit** them. When it is done, the
+   new part is on screen and nothing pops up (the same when the part already existed and
+   was opened). The **Listing Window** opens only when a run stops without a part on screen
+   (you cancel after entering a part number, or something fails), and shows what happened.
 
 Attributes set: `DB_PART_NO` = part number, `DB_PART_NAME` = the name you
 confirm (pre-filled with the product title, all caps), `HE_Manufacturer` =

@@ -7,7 +7,8 @@ Used by NX-Scripts/Export-Body-DXF. For each solid body of the work part:
    "normal to face" view) and save a view looking straight at it, zoomed to fit, named
    DXF_<BODYNAME>,
 3. export the body to DXF through that view with every edge shown,
-4. name the file <partID>_<revision>_<bodyname>.dxf in the repo's output/ folder.
+4. name the file <partID>.<revision>-UNRELEASED.dxf in the repo's output/dxf/ folder, as Export-PDF
+   and Export-STEP name theirs (with _<bodyname> added when the part has more than one solid body).
 
 NX notes: views and DXF export have no feature Builder (views are saved with
 ViewCollection.SaveAs, the exporter is a DexBuilder), so none of this appears in the feature tree.
@@ -19,7 +20,9 @@ import re
 import NXOpen
 import NXOpen.UF          # NX only creates NXOpen.UF once it is imported explicitly
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output")
+# DXFs get their own folder in output/, apart from the STEP files Export-STEP writes to output/step/
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "dxf")
+SUFFIX = "UNRELEASED"                                # <partID>.<revision>-UNRELEASED.dxf; "" for none
 VIEW_PREFIX = "DXF_"
 _ID_ATTRIBUTES = ("DB_PART_NO", "DB_PART_REV")
 _MAX_VIEW_NAME = 30                                  # NX view names are limited in length
@@ -63,10 +66,14 @@ def body_name(body, index):
     return name or "BODY_{0}".format(index)
 
 
-def dxf_path(out_dir, number, rev, name, used):
-    """out_dir/<number>_<rev>_<name>.dxf; a name already used in this run gets _2, _3, ..."""
-    stem = "{0}_{1}_{2}".format(safe_name(number, default="PART"), safe_name(rev, default="0"),
-                                safe_name(name))
+def dxf_path(out_dir, number, rev, name, used, add_body_name=False):
+    """out_dir/<number>.<rev>-UNRELEASED.dxf, with _<name> added if `add_body_name` (a part with more
+    than one solid body); a name already used in this run gets _2, _3, ..."""
+    stem = "{0}.{1}".format(safe_name(number, default="PART"), safe_name(rev, default="0"))
+    if SUFFIX:
+        stem += "-" + safe_name(SUFFIX)
+    if add_body_name:
+        stem += "_" + safe_name(name)
     candidate, n = stem, 1
     while candidate.lower() in used:
         n += 1
@@ -384,7 +391,7 @@ def export_part_bodies(session, part, out_dir=None, log=None):
                 normal = face_outward_normal(planar[0], body, part, session)
                 view = create_face_view(session, part, normal,
                                         (VIEW_PREFIX + safe_name(name, upper=True))[:_MAX_VIEW_NAME])
-                path = dxf_path(out_dir, number, rev, name, used)
+                path = dxf_path(out_dir, number, rev, name, used, add_body_name=len(solids) > 1)
                 export_dxf(session, part, body, view, path)
                 result["exported"].append((name, view, path))
                 log("{0}: {1}  (view {2}, face area {3:.3f}{4})".format(

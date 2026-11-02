@@ -31,7 +31,7 @@ _add_repo_root_to_path()
 
 from lib.layers import move_to_layer  # noqa: E402
 from lib.mcmaster import MCMASTER_OUT, build_description, fetch_mcmaster, make_filename_safe  # noqa: E402
-from lib.nx_dialogs import ask_yes_no, prompt_string  # noqa: E402
+from lib.nx_dialogs import DeferredListing, ask_yes_no, prompt_string  # noqa: E402
 from lib.teamcenter import (MCMASTER_TC_FOLDER, find_item_revision_spec, import_parasolid,  # noqa: E402
                             open_teamcenter_part)
 from lib.vendor_part import create_vendor_part  # noqa: E402
@@ -52,17 +52,29 @@ _BODY_LAYER = 71
 def main(args) :
 
     theSession  = NXOpen.Session.GetSession() #type: NXOpen.Session
-    lw = theSession.ListingWindow
-    lw.Open()
-    lw.WriteLine("=" * 60)
-    lw.WriteLine("Running CREATE_MCMASTER_PART.py (McMaster -> Teamcenter COTS part)")
-    lw.WriteLine("=" * 60)
+    # The log goes to the Listing Window only at the end, and only when the run
+    # stopped without the part on screen (cancelled or failed). Written earlier,
+    # the Information window pops up over the dialogs below and takes their
+    # keyboard focus.
+    lw = DeferredListing(theSession.ListingWindow)
+    succeeded = False
+    try:
+        succeeded = _run(theSession, lw)
+    finally:
+        if not succeeded:
+            lw.flush()
+
+
+def _run(theSession, lw):
+    """The tool's flow. True when it ends with the part open (new or existing)."""
 
     # --- 1. Ask for the McMaster part number ---
     entered_pn = prompt_string(_PARTNO_DLX, "partNo")
     if entered_pn is None:
-        lw.WriteLine("Cancelled: part number dialog dismissed.")
-        return
+        return  # dismissed before anything happened: nothing to report
+    lw.WriteLine("=" * 60)
+    lw.WriteLine("Running CREATE_MCMASTER_PART.py (McMaster -> Teamcenter COTS part)")
+    lw.WriteLine("=" * 60)
     if not entered_pn:
         lw.WriteLine("Cancelled: no part number entered.")
         return
@@ -89,19 +101,11 @@ def main(args) :
                 entered_pn, ex))
             return
         lw.WriteLine("Opened existing part: {0}".format(opened.Leaf))
-        return
+        return True
 
     # --- 2. Scrape JSON + download the no-threads Parasolid CAD ---
-    # Modal notice so the user sees what's happening before the scraper runs
-    # (it freezes NX's UI while Edge runs, so Listing Window text won't repaint
-    # until afterward). Blocks until the user clicks OK.
-    NXOpen.UI.GetUI().NXMessageBox.Show(
-        "McMaster Scraper",
-        NXOpen.NXMessageBox.DialogType.Information,
-        "Starting the McMaster scraper for part {0}.\n\n"
-        "This opens Microsoft Edge in the background and may take up to a "
-        "minute per step (scrape, then CAD download).\n\n"
-        "Click OK to continue.".format(entered_pn))
+    # NX is busy for the few seconds this takes; the part-name dialog (step 4)
+    # comes up when it is done.
     lw.WriteLine("Fetching McMaster data for {0} -> {1} ...".format(
         entered_pn, MCMASTER_OUT))
     fetched = fetch_mcmaster(entered_pn, log=lw.WriteLine)
@@ -195,15 +199,8 @@ def main(args) :
 
     theSession.CleanUpFacetedFacesAndEdges()
 
-    # --- 8. Tell the user it is done ---
-    # Last thing written, so it is what they see at the bottom of the Listing Window.
-    lw.WriteLine("")
-    lw.WriteLine("=" * 60)
-    if cad_file:
-        lw.WriteLine("Import was successful. You can close this window.")
-    else:
-        lw.WriteLine("Part created (no CAD was imported). You can close this window.")
-    lw.WriteLine("=" * 60)
+    # --- 8. Done: the new part on screen is the confirmation (no Listing Window) ---
+    return True
 
 
 if __name__ == '__main__':

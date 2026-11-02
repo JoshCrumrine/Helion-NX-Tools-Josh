@@ -8,6 +8,8 @@ def prompt_string(dlx_path, block_id, default=None):
     Returns the stripped field value, or None if the user cancels. If `default`
     is given it is pre-filled into the field (editable by the user); otherwise
     the field is cleared, so a value from a previous run never carries over.
+    The field gets the keyboard focus when the dialog opens, so the user can
+    type straight away.
 
     BlockStyler dialogs require callback handlers to be registered (NX errors
     with "The Initialize callback is not registered" otherwise), and block
@@ -36,6 +38,11 @@ def prompt_string(dlx_path, block_id, default=None):
         # NX restores saved field values after initialize; reset again once
         # the dialog is actually on screen so a previous run's text never shows.
         _reset()
+        # Put the cursor in the field. Best-effort — never block the dialog.
+        try:
+            dialog.TopBlock.FindBlock(block_id).Focus()
+        except Exception:
+            pass
 
     def update_cb(block):
         return 0
@@ -287,3 +294,32 @@ def ask_yes_no(title, message):
     response = NXOpen.UI.GetUI().NXMessageBox.Show(
         title, NXOpen.NXMessageBox.DialogType.Question, message)
     return response == 1
+
+
+class DeferredListing:
+    """Stands in for the Listing Window and writes to it only when flushed.
+
+    Writing to the Listing Window brings up NX's Information window, and when
+    that happens just before a dialog is shown, the window comes up over the
+    dialog and takes its keyboard focus (seen 2026-11-01 with
+    CREATE_MCMASTER_PART.py's part-number prompt). A script that shows dialogs
+    along the way can write its progress here and call flush() when it is done,
+    e.g. in a `finally`. Has WriteLine like a ListingWindow, so it can be passed
+    wherever one is expected.
+    """
+
+    def __init__(self, listing_window):
+        self._listing_window = listing_window
+        self._lines = []
+
+    def WriteLine(self, line):
+        self._lines.append(line)
+
+    def flush(self):
+        """Open the Listing Window and write the held lines, if there are any."""
+        if not self._lines:
+            return
+        self._listing_window.Open()
+        for line in self._lines:
+            self._listing_window.WriteLine(line)
+        self._lines = []

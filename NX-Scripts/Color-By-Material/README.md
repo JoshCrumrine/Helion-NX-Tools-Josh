@@ -14,7 +14,7 @@ Four scripts in `NX-Scripts/Color-By-Material/`:
 | `color_by_material.py`               | The **component parts**                                                | **Cleared** on every component first, so the new part colors show        |
 | `color_by_material_asm_leave_color.py` | The **component parts**                                                | **Left alone**; a component with an assembly level override keeps showing it |
 | `color_by_material_assembly_level.py` | **Only the assembly**: a display override on each body occurrence      | Not touched; no part is modified                                         |
-| `assign_and_color_materials.py`      | The **component parts**, and it **assigns materials** to bodies that have none | **Cleared** first, like `color_by_material.py`                           |
+| `assign_and_color_materials.py`      | The **component parts**, and it **assigns materials** to bodies that have none (and updates the mass properties) | **Cleared** first, like `color_by_material.py`                           |
 
 The first two are otherwise identical. Use `color_by_material_asm_leave_color.py`\
 when you want to keep colors someone set deliberately in the assembly.
@@ -125,10 +125,16 @@ no-material color, it asks you which material it should have.
   more dialogs. Tick it together with a selection and that body is still assigned.
 - Prompts are **per body of each distinct part**: a part used 20 times is asked once per body, not\
   20 times, because the material belongs to the part. The active part's own bodies are included.
-- The Listing Window ends with `Materials assigned from the prompt`, one line per assignment, and\
-  `Could not assign` for any failure with NX's reason.
+- **Mass properties:** once a part's bodies have their new materials, the part's mass properties are\
+  updated (Analysis → Mass Properties → Update Now, as the Assign Material script does), so its weight\
+  uses the new densities. Then every assembly that holds such a part is updated too, deepest\
+  subassembly first and the displayed assembly last, so the assembly weights add up. A part whose bodies\
+  all had a material already is not touched. This happens after a cancel too, for what was assigned.
+- The Listing Window ends with `Materials assigned from the prompt`, one line per assignment,\
+  `Could not assign` for any failure with NX's reason, and `Mass properties updated for the new\
+  materials` with the parts and assemblies whose weight was updated.
 
-**This modifies the parts twice over**: the material assignment and the color. Neither is saved;\
+**This modifies the parts three ways**: the material assignment, the color and the weight. None is saved;\
 review, then File -> Save All. A read-only part (for example not checked out of Teamcenter) can\
 still be assigned and colored in the session but cannot be saved as-is, same as for the coloring.\
 Try it on a copy first.
