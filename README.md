@@ -80,7 +80,8 @@ the folder tree and adds it to `sys.path`, so it finds `lib/` and\
 - **[Export Body DXF](NX-Scripts/Export-Body-DXF/README.md)** — for each solid body of the part, saves a view square-on
   to its largest flat face (`DXF_<BODYNAME>`, zoomed to fit) and exports the body to
   `output/dxf/<partID>.<revision>-UNRELEASED.dxf` (`_<bodyname>` added when the part has several
-  solid bodies) with all edges shown. Not yet confirmed in NX.
+  solid bodies) with all edges shown, each line once. A sheet metal part gets one DXF of its Flat Solid
+  (a temporary one if it has none) without bend lines. Not yet confirmed in NX.
 - **[Env Probe](NX-Scripts/Env-Probe/README.md)** — diagnostic that prints what NX sees\
   when it runs a script (script folder, `UGII_*` variables, `PYTHONPATH`, `sys.path`) to\
   trace the "Unable to append module directory path in PYTHONPATH" warning.

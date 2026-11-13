@@ -12,15 +12,15 @@
 # only at startup, so after changing it: reinstall, then restart NX.
 #
 # DEBUG = True writes one line per right-click menu to the NX system log (Help > Log File): where
-# the menu is, what NX built it for, and its entries. It is on for the trial, to confirm which menus
-# get the entries; turn it off once that is settled.
+# the menu is, what NX built it for, and its entries. It was on for the trial, to confirm which
+# menus get the entries; off since that was settled.
 import NXOpen
 import NXOpen.Assemblies
 import NXOpen.MenuBar
 
 # Defined in helion_copy_part_number.men; they go on the menu in this order
 BUTTONS = ("HELION_COPY_PART_NUMBER", "HELION_COPY_PART_NAME")
-DEBUG = True
+DEBUG = False
 _LOG_PREFIX = "[Copy Part Number] "
 _SELECTION_CHECK_MAX = 50               # selected objects looked at per right-click
 

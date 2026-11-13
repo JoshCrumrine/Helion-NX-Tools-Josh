@@ -31,7 +31,7 @@ _add_repo_root_to_path()
 
 from lib.layers import move_to_layer  # noqa: E402
 from lib.mcmaster import MCMASTER_OUT, build_description, fetch_mcmaster, make_filename_safe  # noqa: E402
-from lib.nx_dialogs import DeferredListing, ask_yes_no, prompt_string  # noqa: E402
+from lib.nx_dialogs import DeferredListing, ask_string, ask_yes_no, prompt_string  # noqa: E402
 from lib.teamcenter import (MCMASTER_TC_FOLDER, find_item_revision_spec, import_parasolid,  # noqa: E402
                             open_teamcenter_part)
 from lib.vendor_part import create_vendor_part  # noqa: E402
@@ -69,7 +69,10 @@ def _run(theSession, lw):
     """The tool's flow. True when it ends with the part open (new or existing)."""
 
     # --- 1. Ask for the McMaster part number ---
-    entered_pn = prompt_string(_PARTNO_DLX, "partNo")
+    # NX's classic input box: paste with Ctrl+V and press Enter for OK. The
+    # BlockStyler dialog is the fallback if that box cannot be shown.
+    entered_pn = ask_string("McMaster Part Number",
+                            fallback=lambda: prompt_string(_PARTNO_DLX, "partNo"))
     if entered_pn is None:
         return  # dismissed before anything happened: nothing to report
     lw.WriteLine("=" * 60)
@@ -151,7 +154,11 @@ def _run(theSession, lw):
 
     # --- 4. Ask the user for the part name (DB_PART_NAME), prefilled with the
     #        description as an editable default ---
-    part_name = prompt_string(_PARTNAME_DLX, "partName", default=part_desc)
+    #        (Enter accepts it; see step 1. The BlockStyler dialog is the
+    #        fallback, also for a description too long for the classic box.)
+    part_name = ask_string("Part Name", default=part_desc,
+                           fallback=lambda: prompt_string(_PARTNAME_DLX, "partName",
+                                                          default=part_desc))
     if part_name is None:
         lw.WriteLine("Cancelled: part name dialog dismissed.")
         return

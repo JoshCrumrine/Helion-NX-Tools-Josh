@@ -5,9 +5,15 @@
 # largest flat face, save a view looking straight at it (zoomed to fit) called DXF_<BODYNAME>, export
 # the body to DXF through that view with all edges shown, as
 # output/dxf/<partID>.<revision>-UNRELEASED.dxf in the repo's output folder (with _<bodyname> added
-# when the part has several solid bodies). No feature Builder exists for saving views or the DXF
-# exporter, so the views are not features (each one is its own undo step). See README.md in this
-# folder and lib/body_dxf.py for the implementation.
+# when the part has several solid bodies), with each line once. A sheet metal part gets one DXF,
+# of its Flat Solid only, without bend lines; one without a Flat Solid gets a temporary one,
+# removed again after the export.
+# NX writes DXFs in the background (~40 s), so the clean-up runs in the background too; it deletes
+# the translator's .log beside each DXF and writes helion_dxf_cleanup.log in the Windows temp folder.
+# The Listing Window text also goes to NX's log file.
+# No feature Builder exists for saving views or the DXF exporter, so the views are not features
+# (each one is its own undo step). See README.md in this folder and lib/body_dxf.py for the
+# implementation.
 import os
 import sys
 
@@ -40,23 +46,32 @@ def main(args):
     session = NXOpen.Session.GetSession()
     lw = session.ListingWindow
     lw.Open()
+
+    def say(line):
+        """A line to the Listing Window, also written to NX's log file (Help > Log File)."""
+        lw.WriteLine(line)
+        try:
+            session.LogFile.WriteLine("[Export DXF] " + line)
+        except Exception:
+            pass
+
     part = session.Parts.Work
     if part is None:
-        lw.WriteLine("No work part. Open a part first.")
+        say("No work part. Open a part first.")
         return
     if session.Parts.Display is None or session.Parts.Display.Tag != part.Tag:
-        lw.WriteLine("Make the part the displayed part first (the views are made in the graphics window).")
+        say("Make the part the displayed part first (the views are made in the graphics window).")
         return
 
-    lw.WriteLine("Exporting DXF files for {0} ...".format(part.Leaf))
-    result = export_part_bodies(session, part, log=lw.WriteLine)
+    say("Exporting DXF files for {0} ...".format(part.Leaf))
+    result = export_part_bodies(session, part, log=say)
 
-    lw.WriteLine("")
-    lw.WriteLine("Exported {0} DXF file(s) to: {1}".format(len(result["exported"]), result["out_dir"]))
+    say("")
+    say("Exported {0} DXF file(s) to: {1}".format(len(result["exported"]), result["out_dir"]))
     for name, why in result["skipped"]:
-        lw.WriteLine("Skipped {0}: {1}".format(name, why))
+        say("Skipped {0}: {1}".format(name, why))
     for name, why in result["failures"]:
-        lw.WriteLine("Failed {0}: {1}".format(name, why))
+        say("Failed {0}: {1}".format(name, why))
 
 
 if __name__ == '__main__':

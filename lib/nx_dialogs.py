@@ -81,6 +81,71 @@ def prompt_string(dlx_path, block_id, default=None):
         dialog.Dispose()
 
 
+def ask_string(cue, default="", fallback=None):
+    """Ask for one line of text in NX's classic input box; Enter means OK.
+
+    Unlike a BlockStyler dialog (see prompt_string), where Enter only commits
+    the field and OK must still be clicked, this box closes and returns as soon
+    as Enter is pressed, so a value can be pasted with Ctrl+V and accepted with
+    Enter. It wraps uc1600 (UF_UI_ask_string_input): `cue` is the box's label
+    (80 characters at most) and the text is limited to 132 characters.
+
+    `default` is filled into the field, so Enter alone accepts it.
+
+    Returns the stripped text, or None when the user cancels or goes Back. If
+    the box cannot be shown (uc1600 answers 8, or the wrapper is missing or
+    fails) or `default` is longer than the box holds, `fallback` is called with
+    no arguments and its result returned; with no fallback, None.
+    """
+    import NXOpen.UF
+    default = default or ""
+    if len(default) > 132:
+        return fallback() if fallback else None
+    session = NXOpen.Session.GetSession()
+    ui = NXOpen.UF.UFSession.GetUFSession().Ui
+    # A script must lock NX's UI around an Open C dialog, or uc1600 answers 8
+    # and shows nothing (seen 2026-11-05). 1 is UF_UI_FROM_CUSTOM; the lock
+    # answers 5 (UF_UI_LOCK_SET) when it took it, and only then is it unlocked.
+    try:
+        lock = ui.LockUgAccess(1)
+    except Exception as ex:
+        lock = ex
+    try:
+        result = ui.AskStringInput(cue, default)
+    except Exception as ex:
+        result = ex
+    finally:
+        if lock == 5 or lock is None:
+            try:
+                ui.UnlockUgAccess(1)
+            except Exception:
+                pass
+    if isinstance(result, Exception):
+        # The fallback dialog is shown only now that NX's UI is unlocked.
+        session.LogFile.WriteLine("ask_string: AskStringInput failed: {0}".format(result))
+        return fallback() if fallback else None
+    # Logged so the wrapper's return order can be checked in the syslog.
+    session.LogFile.WriteLine("ask_string: lock {0!r}, AskStringInput returned {1!r}".format(
+        lock, result))
+    parts = result if isinstance(result, (tuple, list)) else (result,)
+    texts = [p for p in parts if isinstance(p, str)]
+    text = texts[0] if texts else ""
+    # uc1600 answers 1 Back, 2 Cancel, 3 OK (text unchanged), 5 text entered,
+    # 8 unable to show the box, and also returns the text's length. The
+    # wrapper's order is not documented, so the answer is the number that is
+    # not the length (when both are equal, either one is the answer).
+    numbers = [p for p in parts if isinstance(p, int) and not isinstance(p, bool)]
+    others = [n for n in numbers if n != len(text)]
+    response = others[0] if others else (numbers[0] if numbers else 5)
+    if response == 8:
+        return fallback() if fallback else None
+    if response not in (3, 5):
+        return None
+    if response == 3 and not text:
+        text = default          # 3 is "OK, default accepted"
+    return text.strip()
+
+
 class UserCancelled(Exception):
     """The user ticked the dialog's "cancel the whole operation" toggle (see choose_from_list)."""
 

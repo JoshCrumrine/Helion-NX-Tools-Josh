@@ -75,14 +75,55 @@ def open_teamcenter_part(the_session, spec):
 
     `spec` is an ItemRevisionCliSpec from find_item_revision_spec(). Returns the
     opened part. Raises if NX cannot open it (the caller reports the error).
+
+    If the part is already loaded in the session, it is made the displayed part
+    instead: opening it again fails with "File already exists" (seen 2026-11-05).
     """
-    part, load_status = the_session.Parts.OpenActiveDisplay(
-        spec, NXOpen.DisplayPartOption.AllowAdditional)
+    loaded = find_loaded_part(the_session, spec)
+    if loaded is not None:
+        _status, load_status = the_session.Parts.SetActiveDisplay(
+            loaded, NXOpen.DisplayPartOption.AllowAdditional,
+            NXOpen.PartDisplayPartWorkPartOption.UseLast)
+        try:
+            load_status.Dispose()
+        except Exception:
+            pass
+        return loaded
+    try:
+        part, load_status = the_session.Parts.OpenActiveDisplay(
+            spec, NXOpen.DisplayPartOption.AllowAdditional)
+    except Exception:
+        # For checking find_loaded_part's name matching in the syslog.
+        names = []
+        for p in the_session.Parts:
+            try:
+                names.append("{0} | {1}".format(p.Leaf, p.FullPath))
+            except Exception:
+                pass
+        the_session.LogFile.WriteLine("open_teamcenter_part: {0} failed; loaded parts: {1}".format(
+            spec, "; ".join(names)))
+        raise
     try:
         load_status.Dispose()
     except Exception:
         pass
     return part
+
+
+def find_loaded_part(the_session, spec):
+    """The part in this session that `spec` ("@DB/<item>/<rev>") names, or None.
+
+    A Teamcenter part's Leaf is "<item>/<rev>" (see lib/body_dxf.py::_input_file).
+    """
+    wanted = spec.strip().lower()
+    for part in the_session.Parts:
+        try:
+            names = ("@db/" + str(part.Leaf).lower(), str(part.FullPath).lower())
+        except Exception:
+            continue
+        if wanted in names:
+            return part
+    return None
 
 
 # Every revision rule probe_revision_rules() tries by default. "" asks Teamcenter

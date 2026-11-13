@@ -15,13 +15,13 @@
 # NX reads this file only at startup, so after changing it: reinstall, then restart NX.
 #
 # DEBUG = True writes one line per selection change in a sketch to the NX system log (Help > Log
-# File): what is selected, NX's newest undo mark and what this script did. It is on for the trial, to
-# see how NX reports the changes and what it names its undo marks; turn it off once that is settled.
+# File): what is selected, NX's newest undo mark and what this script did. It was on for the trial, to
+# see how NX reports the changes and what it names its undo marks; off since that was settled.
 import re
 
 import NXOpen
 
-DEBUG = True
+DEBUG = False
 _LOG_PREFIX = "[Keep Sketch Selection] "
 
 # Undo mark names after which the selection comes back: relations between whole curves, Convert

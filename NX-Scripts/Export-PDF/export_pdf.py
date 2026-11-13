@@ -1,17 +1,22 @@
 # NX 2506
 # Author:  jo388c
 # Created: 2026-10-29
-# Exports all sheets of the displayed drawing to one PDF in the repo's output\pdf folder, in one click,
-# with UNRELEASED written large and see-through across every page.
+# Exports all sheets of the displayed drawing to one PDF in the repo's output\pdf folder, in one click.
+# A drawing that is not Production_Released in Teamcenter gets UNRELEASED written large and
+# see-through across every page; a released one gets no watermark.
 #
 # Each page is the size of its sheet (Full Scale: an 11 x 17 in sheet gives an 11 x 17 in page), in
 # sheet order: by the number each sheet name ends in (Sheet 1, Sheet 2, ...), or as NX lists them when
 # a name has no number. Everything else (colors, line widths, text) comes from NX's settings for
 # File > Export > PDF, which Helion's site defaults set (one thin line width). pdf_watermark.py (in
 # this folder) then writes the watermark diagonally across each page, centered on the drawing's
-# border. The file is named <part number>.<revision>-UNRELEASED.pdf; a file of that name already in
-# output\pdf is replaced. STEP and DXF exports go to output\step and output\dxf beside it. Nothing
-# in the drawing changes and nothing is saved.
+# border. The file is named <part number>.<revision>-UNRELEASED.pdf, or <part number>.<revision>.pdf
+# when released; a file of that name already in output\pdf is replaced. STEP and DXF exports go to
+# output\step and output\dxf beside it. Nothing is saved.
+#
+# A released drawing changed in this NX session (a view deleted by accident, say) is no longer the
+# released drawing. A box then asks whether to reopen it from Teamcenter, which discards every change
+# made to that part in this session, and export the drawing as released (Yes), or to cancel (No).
 #
 # If any view is out of date, a warning lists them and asks whether to export anyway (Yes) or to
 # cancel (No) so the views can be updated first.
@@ -35,7 +40,9 @@ if _HERE not in sys.path:
 
 import pdf_watermark  # noqa: E402
 
-WATERMARK = "UNRELEASED"    # written across every page and added to the file name; "" for neither
+WATERMARK = "UNRELEASED"    # written across every page and added to the file name of a drawing that
+                            # is not released; "" for neither
+RELEASED_STATUSES = ("Production_Released",)    # Teamcenter release statuses that mean released
 _WAIT_SECONDS = 30          # how long to wait for NX to finish writing the PDF
 
 # <repo>\output\pdf: this file is <repo>\NX-Scripts\Export-PDF\export_pdf.py
@@ -56,8 +63,8 @@ def _string_attribute(part, title):
     return ""
 
 
-def pdf_file_name(part):
-    """"<number>.<revision>-UNRELEASED.pdf": the part number and revision, then the watermark.
+def pdf_file_name(part, label):
+    """"<number>.<revision>-<label>.pdf", or "<number>.<revision>.pdf" when `label` is "".
 
     Number and revision are the DB_PART_NO and DB_PART_REV attributes, falling back to the part
     name ("1152103-001/01"). Characters Windows does not allow in file names become "_". A part that
@@ -67,9 +74,57 @@ def pdf_file_name(part):
     number = _string_attribute(part, "DB_PART_NO") or leaf_number.strip()
     rev = _string_attribute(part, "DB_PART_REV") or re.split(r"[\s/]", leaf_rest.strip(), 1)[0]
     stem = re.sub(_UNSAFE, "_", number + ("." + rev if rev else "")).strip(" .") or "drawing"
-    if WATERMARK:
-        stem += "-" + re.sub(_UNSAFE, "_", WATERMARK).strip(" .")
+    if label:
+        stem += "-" + re.sub(_UNSAFE, "_", label).strip(" .")
     return stem + ".pdf"
+
+
+def release_status(part):
+    """The part's Teamcenter release status, e.g. "Production_Released"; "" when it has none or NX
+    cannot say (a part that is not in Teamcenter)."""
+    try:
+        return (part.PDMPart.GetReleaseStatus() or "").strip()
+    except Exception:
+        return ""
+
+
+def is_released(status):
+    """Whether `status` (one release status, or several separated by commas) is one of
+    RELEASED_STATUSES."""
+    wanted = {s.lower() for s in RELEASED_STATUSES}
+    return any(s.strip().lower() in wanted for s in re.split(r"[,;]", status or ""))
+
+
+def _modified(part):
+    """Whether `part` has changes in this NX session that are not saved (False when NX cannot say)."""
+    try:
+        return bool(part.IsModified)
+    except Exception:
+        return False
+
+
+def reopen_wanted(part, status):
+    """Say that the released drawing `part` has changes in this session and ask whether to reopen it
+    from Teamcenter. True means reopen and export."""
+    answer = NXOpen.UI.GetUI().NXMessageBox.Show(
+        "Export PDF: Released Drawing Changed", NXOpen.NXMessageBox.DialogType.Question,
+        "{0} is {1} in Teamcenter, but it has changes in this NX session, so it is not the released "
+        "drawing.\n\n"
+        "Reopen it from Teamcenter and export the drawing as released?".format(
+            re.sub(r"\s*\(.*?\)", "", str(part.Leaf)), status))
+    return answer == 1          # 1 is Yes, 2 is No
+
+
+def reopen(part):
+    """Load `part` again from Teamcenter, discarding its changes in this session (File > Close >
+    Reopen Selected Part), and return the reloaded part. Its components are left as they are."""
+    reloaded, report = part.Reopen(NXOpen.BasePart.CloseWholeTree.FalseValue,
+                                   NXOpen.BasePart.CloseModified.CloseModified, None)
+    try:
+        report.Dispose()
+    except Exception:
+        pass
+    return reloaded or NXOpen.Session.GetSession().Parts.Display
 
 
 def sheets_in_order(part):
@@ -166,9 +221,9 @@ def _wait_until_finished(path):
     return True
 
 
-def export_to_file(part, sheets, path, write):
-    """Export `sheets` to `path` with the watermark on every page, replacing an older file of that
-    name, and report through write(line). Returns True when the PDF was written."""
+def export_to_file(part, sheets, path, write, watermark):
+    """Export `sheets` to `path` with `watermark` on every page ("" for none), replacing an older file
+    of that name, and report through write(line). Returns True when the PDF was written."""
     old = path + ".old"
     replacing = os.path.isfile(path)
     if replacing:
@@ -188,11 +243,11 @@ def export_to_file(part, sheets, path, write):
     problem, pages = None, 0
     if not (_finished(path) if error else _wait_until_finished(path)):
         problem = "NX did not write {0}{1}".format(path, ": {0}".format(error) if error else ".")
-    elif WATERMARK:
+    elif watermark:
         try:
-            pages = pdf_watermark.add_watermark(path, WATERMARK)
+            pages = pdf_watermark.add_watermark(path, watermark)
         except Exception as ex:
-            problem = "Could not add the {0} watermark, so the PDF was not kept: {1}".format(WATERMARK, ex)
+            problem = "Could not add the {0} watermark, so the PDF was not kept: {1}".format(watermark, ex)
 
     if problem:
         write(problem)
@@ -209,9 +264,9 @@ def export_to_file(part, sheets, path, write):
     if replacing:
         _remove(old)
     write("Exported {0}".format(path))
-    if WATERMARK:
+    if watermark:
         write("  {0} watermark on {1}".format(
-            WATERMARK, "the page" if pages == 1 else "all {0} pages".format(pages)))
+            watermark, "the page" if pages == 1 else "all {0} pages".format(pages)))
     if replacing:
         write("  (replaced the older file of the same name)")
     if error:
@@ -235,6 +290,38 @@ def main(args):
                      "again.".format(part.Leaf))
         return
 
+    # A released drawing gets no watermark and must be exported as Teamcenter has it. The box comes
+    # before anything is written to the Listing Window, which would come up over it.
+    status = release_status(part)
+    released = is_released(status)
+    reopened = False
+    if released and _modified(part):
+        if not reopen_wanted(part, status):
+            lw.WriteLine("Cancelled: nothing was exported, and {0} was left as it is in this "
+                         "session.".format(part.Leaf))
+            return
+        try:
+            part = reopen(part)
+        except Exception as ex:
+            lw.WriteLine("Could not reopen {0} from Teamcenter, so nothing was exported: {1}".format(
+                part.Leaf, ex))
+            return
+        reopened = True
+        sheets = sheets_in_order(part)
+        if not sheets:
+            lw.WriteLine("{0} has no drawing sheets after reopening it, so nothing was "
+                         "exported.".format(part.Leaf))
+            return
+    watermark = "" if released else WATERMARK
+    lw.WriteLine("Release status: {0} ({1})".format(
+        status or "none", watermark + " watermark" if watermark else "no watermark"))
+    if reopened:
+        lw.WriteLine("Reopened {0} from Teamcenter: the changes made to it in this session were "
+                     "discarded.".format(part.Leaf))
+        if _modified(part):
+            lw.WriteLine("  (NX marks it as changed again right after loading it; it is still the drawing "
+                         "as Teamcenter has it.)")
+
     stale = [stale_views(sheet) for sheet in sheets]
     lw.WriteLine("Exporting {0} of {1} to PDF ...".format(
         "1 sheet" if len(sheets) == 1 else "{0} sheets".format(len(sheets)), part.Leaf))
@@ -248,7 +335,8 @@ def main(args):
         return
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    export_to_file(part, sheets, os.path.join(OUTPUT_DIR, pdf_file_name(part)), lw.WriteLine)
+    export_to_file(part, sheets, os.path.join(OUTPUT_DIR, pdf_file_name(part, watermark)), lw.WriteLine,
+                   watermark)
 
 
 if __name__ == '__main__':

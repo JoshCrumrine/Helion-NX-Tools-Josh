@@ -1,25 +1,30 @@
 # Export PDF (NX Open)
 
 NX Open (Python) script for **NX 2506**. One click exports **every sheet of the displayed drawing** to **one
-PDF** in the repo's **`output\pdf`** folder, each page the size of its sheet, with **UNRELEASED** written large
-and see-through diagonally across every page. STEP and DXF exports go to `output\step` and `output\dxf`
-beside it.
+PDF** in the repo's **`output\pdf`** folder, each page the size of its sheet. A drawing that is not
+**Production_Released** in Teamcenter gets **UNRELEASED** written large and see-through diagonally across every
+page; a released one gets no watermark and is exported exactly as released. STEP and DXF exports go to
+`output\step` and `output\dxf` beside it.
 
 Scripts: `NX-Scripts/Export-PDF/export_pdf.py` (the button) and `pdf_watermark.py` beside it (adds the
 watermark; keep the two together). No `lib/` imports. Button icon: `pdf.bmp`.
 
 **Status: trial.** First run in NX on 2026-10-30 worked (export and watermark); the out-of-date box has not
-been seen in NX yet. Built from the NX Open API reference; no recorded journal yet. The watermark was also
+been seen in NX yet. The release handling (no watermark when released, reopening a changed released drawing)
+was added on 2026-11-11 and has not been run in NX yet. Built from the NX Open API reference; no recorded journal yet. The watermark was also
 tested on 184 Helion drawing PDFs made by NX.
 
 ## Run it
 
 1. Open the drawing in **NX 2506** (it must be the **displayed** part; Drafting or any other application).
 2. Click your **Export PDF** button, or **File → Execute → NX Open…** and pick `export_pdf.py`.
-3. If any view is out of date, a box lists them and asks **Export the PDF anyway?** **Yes** exports the
+3. If the drawing is released but has changes in this NX session, a box asks whether to reopen it (see
+   [Released drawings](#released-drawings)).
+4. If any view is out of date, a box lists them and asks **Export the PDF anyway?** **Yes** exports the
    drawing as it is; **No** cancels, so you can update the views and click the button again.
-4. The **Listing Window** lists the pages with their sizes and the file it wrote, e.g.
-   `C:\Code\Helion-NX-Tools\output\pdf\1152103-001.01-UNRELEASED.pdf`.
+5. The **Listing Window** shows the release status, the pages with their sizes and the file it wrote, e.g.
+   `C:\Code\Helion-NX-Tools\output\pdf\1152103-001.01-UNRELEASED.pdf`, or `...\1152103-001.01.pdf` when
+   released.
 
 ## Make a button
 
@@ -34,24 +39,43 @@ The same way as the DXF and STEP buttons: a **New User Command** (right-click th
   A3 page, so nothing is shrunk onto letter paper or cut off.
 * **Everything else as File → Export → PDF**: colors, line widths and text come from NX's settings, which
   Helion's site defaults set (one thin line width). The PDF is written to a folder, not to Teamcenter.
-* **UNRELEASED watermark** on every page, like Teamcenter's UNRELEASED PDFs (Helvetica, lower left to upper
+* **UNRELEASED watermark** on every page when the drawing is not Production_Released (no release status, or
+  another one), like Teamcenter's UNRELEASED PDFs (Helvetica, lower left to upper
   right) but **20% gray** (lighter than Teamcenter's 30%) and **centered on the drawing's border**: the
   script finds the border as the outermost lines on the page and lays the text along its diagonal, as large
   as fits in 90% of it. A page without lines is centered on the page itself. NX's own watermark option is
   not used: it puts the text about 3/4 in left of center.
 * **File name:** `<part number>.<revision>-UNRELEASED.pdf` from the `DB_PART_NO` and `DB_PART_REV`
-  attributes.
+  attributes, or `<part number>.<revision>.pdf` when released.
 * **A file of the same name already in `output\pdf` is replaced.** If it is open in a PDF viewer that locks it
   (Acrobat does), the export stops and says so, and the file is left as it was. If the export fails, the
   older file is put back.
 * **No PDF without its watermark is kept:** if the watermark cannot be added, the new PDF is deleted and the
   Listing Window says why.
-* **Nothing in the drawing changes and nothing is saved.**
+* **Nothing is saved**, and the drawing only changes when you choose to reopen a released one (below).
+
+## Released drawings
+
+The release status is read from Teamcenter. **Production_Released** means released; any other status, or none,
+means not released.
+
+A released drawing is exported as Teamcenter has it. If it has changes in this NX session (a view deleted by
+accident, for example), a box says so and asks **Reopen it from Teamcenter and export the drawing as
+released?**
+
+* **Yes** reopens the drawing from Teamcenter (like File → Close → Reopen Selected Part), which discards every
+  change made to that part in this session, then exports it.
+* **No** cancels: nothing is exported and the drawing stays as it is.
+
+Only the drawing's own part is reopened, not the parts shown in its views. Changes to those reach the drawing
+only when its views are updated, and updating a view changes the drawing's part, so the box catches it. Views
+left out of date still get the out-of-date warning.
 
 ## Settings at the top of `export_pdf.py`
 
-* `WATERMARK = "UNRELEASED"`: the text across every page, also added to the file name. `""` exports without
-  a watermark and names the file `<part number>.<revision>.pdf`.
+* `WATERMARK = "UNRELEASED"`: the text across every page of a drawing that is not released, also added to its
+  file name. `""` exports every drawing without a watermark and names the file `<part number>.<revision>.pdf`.
+* `RELEASED_STATUSES = ("Production_Released",)`: the Teamcenter release statuses that count as released.
 * `OUTPUT_DIR`: where the files go (`<repo>\output\pdf`, created when needed).
 
 `pdf_watermark.py` has the look: `OPACITY = 0.2` (0 invisible, 1 solid black) and `FILL = 0.9` (the share of
