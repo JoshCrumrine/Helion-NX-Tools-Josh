@@ -6,9 +6,10 @@
 # release status of every part in it.
 #
 # Two sheets:
-#   BOM        one row per part with its total quantity in the whole assembly, by part number
-#   Structure  the assembly tree: the displayed assembly, then each part under its parent with the
-#              quantity per parent, indented by level
+#   Indented BOM  the nested BOM: the displayed assembly, then each subassembly (bold) with its parts
+#                 indented below it, each with its quantity per parent and its total quantity. The
+#                 rows are grouped by subassembly, so Excel's + and - buttons fold one away.
+#   Parts List    one row per part with its total quantity in the whole assembly, by part number
 # Suppressed and reference-only components (and everything under them) are left out. A part that is
 # only partially loaded is loaded fully so its materials can be read; nothing in it changes, and any
 # component reference set that loading switches (to Entire Part, say) is put back afterwards. For a
@@ -41,7 +42,9 @@ NOT_LOADED = "not loaded"   # material and status of a part that is not loaded i
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTPUT_DIR = os.path.join(_REPO, "output", "bom")
 
-COLUMNS = ("PN", "Rev", "Name", "QTY", "Material", "Release Status")
+INDENTED_COLUMNS = ("Level", "PN", "Rev", "Name", "QTY per Parent", "Total QTY", "Material",
+                    "Release Status")
+PARTS_COLUMNS = ("PN", "Rev", "Name", "Total QTY", "Material", "Release Status")
 _UNSAFE = r'[\\/:*?"<>|\x00-\x1f]'      # characters Windows does not allow in file names
 
 
@@ -244,13 +247,13 @@ def restore_reference_sets(display_part, root, before):
 
 class Bom:
     """The parts of the displayed assembly: each distinct part once (its number, revision, name,
-    material and release status), its total quantity, and the tree for the Structure sheet."""
+    material and release status), the indented tree, and each part's total quantity."""
 
     def __init__(self, display_part):
         self.display_part = display_part
         self.parts = {}             # key -> {"number", "rev", "name", "material", "status"}
         self.quantity = {}          # key -> total count in the whole assembly
-        self.tree = []              # (level, key, quantity under its parent), the Structure rows
+        self.tree = []              # [level, key, QTY per parent, total QTY, has rows under it]
         self.excluded = {"suppressed": 0, "reference-only": 0}
         self.notes = {"loaded fully": [], "not loaded": [], "no material": [], "load failed": [],
                       "reference sets": []}
@@ -260,10 +263,9 @@ class Bom:
         self._reference = reference_only(display_part, components) if components else set()
         before = reference_sets(root) if root is not None else {}
         try:
-            self.tree.append((0, self._describe(None, display_part), 1))
+            self.tree.append([0, self._describe(None, display_part), 1, 1, False])
             if root is not None:
-                self._count(root)
-                self._branch(root, 1)
+                self.tree[0][4] = self._branch([root], 1)
         finally:
             if before:
                 self.restored, self.notes["reference sets"] = restore_reference_sets(
@@ -301,53 +303,100 @@ class Bom:
                 "status": _release_status(part) if part is not None else NOT_LOADED}
         return key
 
-    def _count(self, parent):
-        """Count every component under `parent`, instance by instance, for the total quantities."""
-        for child in parent.GetChildren():
-            why = self._left_out(child)
-            if why:
-                self.excluded[why] += 1
-                continue
-            key = self._describe(child)
-            self.quantity[key] = self.quantity.get(key, 0) + 1
-            self._count(child)
-
-    def _branch(self, parent, level):
-        """The Structure rows under `parent`: one per distinct part with its count under this parent,
-        then what is under the first of those components."""
-        groups = {}                 # key -> [components], in tree order
-        for child in parent.GetChildren():
-            if not self._left_out(child):
-                groups.setdefault(self._describe(child), []).append(child)
+    def _branch(self, parents, level):
+        """Add the indented rows under `parents`, every instance of one row's part in this branch
+        (a subassembly used 4 times: its 4 components). One row per distinct part below them, in tree
+        order, with its quantity per parent and its total in the branch, then the rows under that
+        part. Every instance is looked at, so instances that differ (a component suppressed in one
+        of them) still give the right totals. Returns True if it added any row."""
+        groups, counts = {}, {}     # key -> [components]; key -> [count under each parent]
+        for i, parent in enumerate(parents):
+            for child in parent.GetChildren():
+                why = self._left_out(child)
+                if why:
+                    self.excluded[why] += 1
+                    continue
+                key = self._describe(child)
+                groups.setdefault(key, []).append(child)
+                counts.setdefault(key, [0] * len(parents))[i] += 1
         for key, components in groups.items():
-            self.tree.append((level, key, len(components)))
-            self._branch(components[0], level + 1)
+            low, high = min(counts[key]), max(counts[key])
+            per_parent = low if low == high else "{0}-{1}".format(low, high)
+            self.quantity[key] = self.quantity.get(key, 0) + len(components)
+            row = [level, key, per_parent, len(components), False]
+            self.tree.append(row)
+            row[4] = self._branch(components, level + 1)
+        return bool(groups)
 
-    def row(self, key):
+    def heading(self):
+        """"1150000-000/01, TOP ASSY": the displayed assembly's number, revision and name."""
+        number, rev, name, _material, _status = self._values(self.tree[0][1])
+        return number + ("/" + rev if rev else "") + (", " + name if name else "")
+
+    def _values(self, key):
         part = self.parts[key]
-        return [part["number"], part["rev"], part["name"], self.quantity.get(key, 1),
-                part["material"], part["status"]]
+        return part["number"], part["rev"], part["name"], part["material"], part["status"]
 
     def bom_rows(self):
-        """One row per part (the displayed assembly itself left out), by part number then revision."""
+        """The Parts List: one row per part (the displayed assembly itself left out) with its total
+        quantity in the whole assembly, by part number then revision."""
         def order(key):
             return self.parts[key]["number"].upper(), self.parts[key]["rev"].upper()
-        return [self.row(key) for key in sorted(self.quantity, key=order)]
-
-    def structure_rows(self):
-        """[(level, row)] in tree order, the quantity being per parent."""
         rows = []
-        for level, key, count in self.tree:
-            row = self.row(key)
-            row[3] = count
-            rows.append((level, row))
+        for key in sorted(self.quantity, key=order):
+            number, rev, name, material, status = self._values(key)
+            rows.append([number, rev, name, self.quantity[key], material, status])
+        return rows
+
+    def indented_rows(self):
+        """The indented BOM, in tree order: [(level, has rows under it, row)], each row being
+        [level, PN, Rev, Name, QTY per parent, total QTY, Material, Release Status]."""
+        rows = []
+        for level, key, per_parent, total, has_children in self.tree:
+            number, rev, name, material, status = self._values(key)
+            rows.append((level, has_children,
+                         [level, number, rev, name, per_parent, total, material, status]))
         return rows
 
 
 # ----------------------------------------------------------------------------- the Excel file
 _NOT_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
-_INDENT_STYLE = 2           # cell style of indent level 1; level n is style 1 + n
-_MAX_INDENT = 15
+_INDENT_PER_LEVEL = 2       # Excel indent steps per BOM level (one step is about a character)
+_MAX_INDENT = 15            # the most Excel's indent allows
+_MAX_OUTLINE = 7            # Excel groups rows at most 7 levels deep
+
+
+def _style_table():
+    """The workbook's cell styles, [(font, fill, indent, centred)], and {name: index of a style}.
+    Fonts: 0 normal, 1 bold, 2 title. Style 0 is Excel's default."""
+    styles, index = [(0, 0, 0, False)], {("text", False, 0): 0}
+
+    def add(name, font, fill=0, indent=0, centred=False):
+        index[name] = len(styles)
+        styles.append((font, fill, indent, centred))
+    add("header", 1, fill=2)
+    add("title", 2)
+    for bold in (False, True):
+        add(("centred", bold), int(bold), centred=True)
+        for indent in range(0 if bold else 1, _MAX_INDENT + 1):
+            add(("text", bold, indent), int(bold), indent=indent)
+    return styles, index
+
+
+_STYLES, _STYLE = _style_table()
+
+
+class Sheet:
+    """One worksheet: a title in row 1, a bold header row (frozen, with filters) in row 2, then
+    `rows`. `levels` (one per row) indents column `indent_column` and groups the rows in Excel's
+    outline, so a subassembly can be collapsed; rows marked in `bold` are bold; the columns in
+    `centred` are centred."""
+
+    def __init__(self, name, title, columns, rows, levels=None, bold=None, indent_column=None,
+                 centred=()):
+        self.name, self.title, self.columns, self.rows = name, title, columns, rows
+        self.levels, self.bold = levels, bold
+        self.indent_column, self.centred = indent_column, set(centred)
 
 
 def _column(index):
@@ -370,61 +419,85 @@ def _cell(ref, value, style=0):
     return '<c r="{0}"{1} t="inlineStr"><is><t{2}>{3}</t></is></c>'.format(ref, style_text, keep, text)
 
 
-def _sheet_xml(columns, rows, indents=None, indent_column=None):
-    """A worksheet: bold header row (frozen, with filters) over `rows`; text stays text, so revision
-    "01" is not turned into 1. `indents` gives each row's indent for column `indent_column`."""
+def _sheet_xml(sheet):
+    """The worksheet XML of `sheet`. Text stays text, so revision "01" is not turned into 1."""
+    rows = sheet.rows
+    levels = sheet.levels or [0] * len(rows)
+    bold = sheet.bold or [False] * len(rows)
     widths = []
-    for i, title in enumerate(columns):
-        lengths = [len(str(row[i])) + (2 * indents[r] if indents and i == indent_column else 0)
+    for i, title in enumerate(sheet.columns):
+        lengths = [len(str(row[i])) + (3 * levels[r] if i == sheet.indent_column else 0)
                    for r, row in enumerate(rows) if row[i] is not None]
         widths.append(min(70, max(len(str(title)) + 5, max(lengths or [0]) + 2)))  # + 5: the filter arrow
-    last = _column(len(columns) - 1)
+    outline = min(max(levels or [0]), _MAX_OUTLINE)
+    last = _column(len(sheet.columns) - 1)
     out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
-           '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>',       # prints one page wide
-           '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" '
+           # the + and - buttons go on a subassembly's own row; prints one page wide
+           '<sheetPr><outlinePr summaryBelow="0"/><pageSetUpPr fitToPage="1"/></sheetPr>',
+           '<sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" '
            'activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>',
-           '<sheetFormatPr defaultRowHeight="15"/><cols>']
+           '<sheetFormatPr defaultRowHeight="15"{0}/><cols>'.format(
+               ' outlineLevelRow="{0}"'.format(outline) if outline else "")]
     out += ['<col min="{0}" max="{0}" width="{1}" customWidth="1"/>'.format(i + 1, w)
             for i, w in enumerate(widths)]
-    out.append('</cols><sheetData><row r="1">')
-    out += [_cell("{0}1".format(_column(i)), title, 1) for i, title in enumerate(columns)]
+    out.append('</cols><sheetData><row r="1" ht="21" customHeight="1">')
+    out.append(_cell("A1", sheet.title, _STYLE["title"]))
+    out.append('</row><row r="2">')
+    out += [_cell("{0}2".format(_column(i)), title, _STYLE["header"])
+            for i, title in enumerate(sheet.columns)]
     out.append('</row>')
-    for r, row in enumerate(rows, 2):
-        out.append('<row r="{0}">'.format(r))
+    for r, row in enumerate(rows):
+        level = min(levels[r], _MAX_OUTLINE)
+        out.append('<row r="{0}"{1}>'.format(r + 3, ' outlineLevel="{0}"'.format(level) if level else ""))
         for i, value in enumerate(row):
-            style = 0
-            if indents and i == indent_column and indents[r - 2]:
-                style = _INDENT_STYLE - 1 + min(indents[r - 2], _MAX_INDENT)
-            out.append(_cell("{0}{1}".format(_column(i), r), value, style))
+            if i == sheet.indent_column:
+                style = _STYLE[("text", bold[r], min(_INDENT_PER_LEVEL * levels[r], _MAX_INDENT))]
+            elif i in sheet.centred:
+                style = _STYLE[("centred", bold[r])]
+            else:
+                style = _STYLE[("text", bold[r], 0)]
+            out.append(_cell("{0}{1}".format(_column(i), r + 3), value, style))
         out.append('</row>')
-    out.append('</sheetData><autoFilter ref="A1:{0}{1}"/>'.format(last, len(rows) + 1))
+    out.append('</sheetData><autoFilter ref="A2:{0}{1}"/>'.format(last, len(rows) + 2))
     out.append('<pageMargins left="0.5" right="0.5" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'
                '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>')
     return "".join(out)
 
 
 def _styles_xml():
-    indents = "".join('<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">'
-                      '<alignment indent="{0}"/></xf>'.format(n) for n in range(1, _MAX_INDENT + 1))
+    xfs = []
+    for font, fill, indent, centred in _STYLES:
+        applies = (' applyFont="1"' if font else "") + (' applyFill="1"' if fill else "")
+        if indent:
+            alignment = '<alignment indent="{0}"/>'.format(indent)
+        elif centred:
+            alignment = '<alignment horizontal="center"/>'
+        else:
+            alignment = ""
+        if alignment:
+            applies += ' applyAlignment="1"'
+        xfs.append('<xf numFmtId="0" fontId="{0}" fillId="{1}" borderId="0" xfId="0"{2}{3}'.format(
+            font, fill, applies, ">{0}</xf>".format(alignment) if alignment else "/>"))
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-            '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
-            '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+            '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font>'
+            '<font><b/><sz val="11"/><name val="Calibri"/></font>'
+            '<font><b/><sz val="14"/><name val="Calibri"/></font></fonts>'
             '<fills count="3"><fill><patternFill patternType="none"/></fill>'
             '<fill><patternFill patternType="gray125"/></fill>'
             '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/>'
             '</patternFill></fill></fills>'
             '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
             '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-            '<cellXfs count="{0}"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
-            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
-            '{1}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/>'
-            '</cellStyles></styleSheet>').format(2 + _MAX_INDENT, indents)
+            '<cellXfs count="{0}">{1}</cellXfs><cellStyles count="1">'
+            '<cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>').format(
+                len(xfs), "".join(xfs))
 
 
 def write_xlsx(path, sheets):
-    """Write an Excel workbook: `sheets` is [(name, columns, rows, indents or None, indent column)]."""
+    """Write an Excel workbook of `sheets` (Sheet objects). Rows 1 and 2 (title and header) repeat
+    at the top of every printed page."""
     ns_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     ns_package = "http://schemas.openxmlformats.org/package/2006/relationships"
     head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -442,10 +515,15 @@ def write_xlsx(path, sheets):
     package_rels = (head + '<Relationships xmlns="{0}">'
                     '<Relationship Id="rId1" Type="{1}/officeDocument" Target="xl/workbook.xml"/>'
                     '</Relationships>').format(ns_package, ns_rel)
+    print_titles = "".join(
+        '<definedName name="_xlnm.Print_Titles" localSheetId="{0}">{1}!$1:$2</definedName>'.format(
+            i, escape("'" + sheet.name.replace("'", "''") + "'"))
+        for i, sheet in enumerate(sheets))
     workbook = (head + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
                 'xmlns:r="{0}"><sheets>'.format(ns_rel)
-                + "".join('<sheet name="{0}" sheetId="{1}" r:id="rId{1}"/>'.format(escape(name), i)
-                          for i, (name, _c, _r, _i, _ic) in enumerate(sheets, 1)) + '</sheets></workbook>')
+                + "".join('<sheet name="{0}" sheetId="{1}" r:id="rId{1}"/>'.format(escape(sheet.name), i)
+                          for i, sheet in enumerate(sheets, 1))
+                + '</sheets><definedNames>' + print_titles + '</definedNames></workbook>')
     workbook_rels = (head + '<Relationships xmlns="{0}">'.format(ns_package)
                      + "".join('<Relationship Id="rId{0}" Type="{1}/worksheet" '
                                'Target="worksheets/sheet{0}.xml"/>'.format(i, ns_rel)
@@ -458,9 +536,8 @@ def write_xlsx(path, sheets):
         z.writestr("xl/workbook.xml", workbook.encode("utf-8"))
         z.writestr("xl/_rels/workbook.xml.rels", workbook_rels.encode("utf-8"))
         z.writestr("xl/styles.xml", _styles_xml().encode("utf-8"))
-        for i, (_name, columns, rows, indents, indent_column) in enumerate(sheets, 1):
-            z.writestr("xl/worksheets/sheet{0}.xml".format(i),
-                       _sheet_xml(columns, rows, indents, indent_column).encode("utf-8"))
+        for i, sheet in enumerate(sheets, 1):
+            z.writestr("xl/worksheets/sheet{0}.xml".format(i), _sheet_xml(sheet).encode("utf-8"))
 
 
 def bom_file_name(display_part):
@@ -470,15 +547,25 @@ def bom_file_name(display_part):
     return stem + "-BOM.xlsx"
 
 
+def workbook_sheets(bom):
+    """The Indented BOM sheet (subassemblies bold, the parts in them indented below) and the Parts
+    List sheet (one row per part, with its total quantity)."""
+    indented = bom.indented_rows()
+    heading = bom.heading()
+    return [Sheet("Indented BOM", u"Indented BOM \u2013 " + heading, INDENTED_COLUMNS,
+                  [row for _level, _bold, row in indented],
+                  levels=[level for level, _bold, _row in indented],
+                  bold=[has_children for _level, has_children, _row in indented],
+                  indent_column=1, centred=(0, 4, 5)),
+            Sheet("Parts List", u"Parts List \u2013 " + heading, PARTS_COLUMNS, bom.bom_rows(),
+                  centred=(3,))]
+
+
 def save_workbook(bom, path, write):
-    """Write the two sheets to `path`, replacing an older file of that name. Returns True if done."""
+    """Write the workbook to `path`, replacing an older file of that name. Returns True if done."""
     temp = path + ".writing"
-    structure = bom.structure_rows()
-    sheets = [("BOM", COLUMNS, bom.bom_rows(), None, None),
-              ("Structure", ("Level",) + COLUMNS, [[level] + row for level, row in structure],
-               [level for level, _row in structure], 1)]
     try:
-        write_xlsx(temp, sheets)
+        write_xlsx(temp, workbook_sheets(bom))
         os.replace(temp, path)
     except OSError as ex:
         try:

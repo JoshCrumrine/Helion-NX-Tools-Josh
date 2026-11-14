@@ -6,8 +6,8 @@ and opens it.
 
 Script: `NX-Scripts/Export-BOM/export_bom.py` (self-contained, no `lib/` imports). Button icon: `bom.bmp`.
 
-**Status: trial.** Not yet run in NX. Tested against a stand-in for NX, and the Excel file it writes was
-opened and checked in Excel.
+**Status: trial.** In use in NX since 2026-11-01 (the flat BOM). The Indented BOM sheet is new on
+2026-11-13 and not yet run in NX; it was tested against a stand-in for NX and checked in Excel.
 
 ## Run it
 
@@ -24,12 +24,21 @@ The same way as the other buttons: a **New User Command** (right-click the ribbo
 
 ## What is in the file
 
-Columns: **PN, Rev, Name, QTY, Material, Release Status**.
+Each sheet starts with a title row naming the assembly (`Indented BOM – 1150000-000/01, TOP ASSY`).
 
-* **BOM** sheet: one row per part, sorted by part number. **QTY is the total in the whole assembly**: a
-  subassembly used twice counts its parts twice. Subassemblies are rows too; the displayed assembly is not.
-* **Structure** sheet: the assembly tree, starting with the displayed assembly (level 0). A **Level** column,
-  the PN indented by level, and **QTY per parent** (3 plates in each subassembly, say).
+* **Indented BOM** sheet (opens first): the nested BOM. The displayed assembly is the first row (level 0);
+  under each subassembly come its parts, indented one step further. Subassembly rows are **bold**.
+  Columns: **Level, PN, Rev, Name, QTY per Parent, Total QTY, Material, Release Status**.
+  * **QTY per Parent**: how many are in one of the subassembly above (4 screws in each mount, say).
+  * **Total QTY**: how many that row stands for in the whole assembly (4 mounts × 4 screws = 16).
+    The same part in two different subassemblies has a row under each.
+  * The rows are **grouped** by subassembly: Excel's **−** and **+** buttons at the left fold a
+    subassembly's parts away and back, and the **1 2 3** buttons above them show that many levels.
+  * If the instances of a subassembly differ (a part suppressed in one of them), QTY per Parent shows
+    the range, e.g. `2-3`, and Total QTY is the exact count.
+* **Parts List** sheet: one row per part, sorted by part number, with its **Total QTY** in the whole
+  assembly (for ordering). Subassemblies are rows too; the displayed assembly is not. Columns: **PN, Rev,
+  Name, Total QTY, Material, Release Status**.
 * **PN, Rev, Name**: the `DB_PART_NO`, `DB_PART_REV` and `DB_PART_NAME` attributes. For a part that is not
   loaded, the number and revision come from its file name and the name from Teamcenter.
 * **Material**: the materials of the part's solid bodies; several are listed with commas, and a body without
@@ -37,7 +46,8 @@ Columns: **PN, Rev, Name, QTY, Material, Release Status**.
 * **Release Status**: the release status in Teamcenter (`Released`, ...). `Unreleased` when it has none,
   `?` if NX could not get it.
 * Text stays text, so revision `01` stays `01` (a CSV file opened in Excel turns it into `1`). The header row
-  is bold, frozen and has filters; each sheet prints landscape, one page wide.
+  is bold, frozen and has filters; each sheet prints landscape, one page wide, with the title and header
+  repeated on every page.
 
 ## What it leaves out, and what it loads
 

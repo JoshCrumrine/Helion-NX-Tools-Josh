@@ -12,8 +12,9 @@
 # Several selected components copy one part number per line, each number once, in selection order.
 # A selected body, face or edge of a component counts as that component. The number is the part's
 # DB_PART_NO attribute; for a component whose part is not loaded it is read from the part name
-# ("1150201-500/01" -> "1150201-500"). The status line says what was copied. Nothing in the model
-# changes.
+# ("1150201-500/01" -> "1150201-500"). The top node of the Assembly Navigator (NX selects the part's
+# component assembly for it) gives the displayed part's number, and so does running it with nothing
+# selected. The status line says what was copied. Nothing in the model changes.
 #
 # Self-contained on purpose (no lib/ imports): NX re-reads this file on every run, so a change to it
 # works on the next click without restarting NX.
@@ -172,8 +173,14 @@ def selected_parts(selection):
         source = _component_of(obj)
         if source is not None:
             number = part_number_of_component(source)
-        elif isinstance(obj, NXOpen.BasePart):          # e.g. the top node of the navigator
+        elif isinstance(obj, NXOpen.BasePart):
             source, number = obj, part_number_of_part(obj)
+        elif isinstance(obj, NXOpen.Assemblies.ComponentAssembly):   # the navigator's top node
+            try:
+                source = obj.OwningPart
+            except Exception:
+                source = None
+            number = part_number_of_part(source) if source is not None else ""
         else:
             skipped.append("{0}: not a component".format(_describe(obj)))
             continue
@@ -185,13 +192,28 @@ def selected_parts(selection):
     return parts, skipped
 
 
+def displayed_part():
+    """(part number, displayed part) as a one-item list, or [] if no part is displayed or it has no
+    number. Stands in for the selection when nothing is selected."""
+    try:
+        part = NXOpen.Session.GetSession().Parts.Display
+    except Exception:
+        part = None
+    number = part_number_of_part(part) if part is not None else ""
+    return [(number, part)] if number else []
+
+
 def selected_values(selection, what):
-    """(values, skipped): the part numbers (what=NUMBER) or part names (what=NAME) of the selected
-    parts, in the order selected_parts() gives them. skipped: one line per object or part left out.
+    """(values, skipped, displayed): the part numbers (what=NUMBER) or part names (what=NAME) of the
+    selected parts, in the order selected_parts() gives them, or of the displayed part when nothing
+    is selected (displayed is then True). skipped: one line per object or part left out.
     """
     parts, skipped = selected_parts(selection)
+    displayed = not parts and not skipped
+    if displayed:
+        parts = displayed_part()
     if what == NUMBER:
-        return [number for number, source in parts], skipped
+        return [number for number, source in parts], skipped, displayed
     names = []
     for number, source in parts:
         name = part_name_of(source, number)
@@ -199,7 +221,7 @@ def selected_values(selection, what):
             names.append(name)
         else:
             skipped.append("{0}: no part name found".format(number))
-    return names, skipped
+    return names, skipped, displayed
 
 
 # ----------------------------------------------------------------------------- clipboard
@@ -299,13 +321,15 @@ def copy_selected(what):
     log_prefix = "[{0}] ".format(title)
     session = NXOpen.Session.GetSession()
     ui = NXOpen.UI.GetUI()
-    values, skipped = selected_values(ui.SelectionManager, what)
+    values, skipped, displayed = selected_values(ui.SelectionManager, what)
     for line in skipped:
         session.LogFile.WriteLine(log_prefix + "skipped " + line)
 
     if not values:
-        reason = ("No {0} found for the selection.".format(noun) if skipped
-                  else "Nothing is selected.")
+        if displayed:
+            reason = "Nothing is selected, and no {0} was found for the displayed part.".format(noun)
+        else:
+            reason = "No {0} found for the selection.".format(noun)
         ui.NXMessageBox.Show(title, NXOpen.NXMessageBox.DialogType.Warning,
                              reason + "\n\nSelect one or more components in the Assembly Navigator "
                              "or the graphics window, then choose {0}.".format(title))
@@ -320,6 +344,8 @@ def copy_selected(what):
         return
 
     message = _summary(values, noun)
+    if displayed:
+        message += " (the displayed part)"
     if skipped:
         message += " ({0} other selected object{1} skipped)".format(
             len(skipped), "" if len(skipped) == 1 else "s")

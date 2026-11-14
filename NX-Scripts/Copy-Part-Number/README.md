@@ -8,15 +8,20 @@ NX Open (Python) tool for **NX 2506** in Teamcenter managed mode. Right-click a 
 
 The text is then on the Windows clipboard, ready to paste into Teamcenter, Excel, Teams or a ticket.
 
-**Status: trial.** Installed per user, by hand. Copy Part Number works in NX (right-click in the
-Assembly Navigator, 2026-10-29). Copy Part Name is new and not yet tried in NX.
+**Status: trial.** Installed per user, by hand. Copy Part Number and Copy Part Name both work in NX
+(right-click a component in the Assembly Navigator, 2026-10-29). The top node of the Assembly
+Navigator (the assembly itself) was added on 2026-11-13 and is not yet tried in NX.
 
 ## What you get
 
 * **Right-click → Copy Part Number / Copy Part Name** on components in the Assembly Navigator, and
   on a component picked in the graphics window. They sit just below **Copy** when the menu has
   one, otherwise at the bottom.
-* **Menu → Edit → Copy Part Number / Copy Part Name**, for whatever is selected.
+* **The top node of the Assembly Navigator** (the assembly, or part, that is open) has them too, and
+  copies its own number or name.
+* **Menu → Edit → Copy Part Number / Copy Part Name**, for whatever is selected. With **nothing
+  selected**, they copy the displayed part's number or name, and the status line ends with
+  `(the displayed part)`.
 * **Several components selected:** one value per line, each part once, in the order they were
   selected (five instances of the same bolt give one line). Both commands list the parts in the same
   order, so numbers and names pasted side by side (e.g. two Excel columns) line up. A part with no
@@ -67,12 +72,14 @@ Select one or more components, then **File → Execute → NX Open…** and pick
 2. Open an assembly, right-click a component in the Assembly Navigator, choose **Copy Part Name**,
    and paste into Notepad.
 3. Try a few selected components, an unloaded component, and a body picked in the graphics window.
+4. Right-click the **top node** of the Assembly Navigator and choose **Copy Part Number**.
 
-During the trial `helion_copy_part_number.py` has `DEBUG = True`: every right-click menu adds one line
-starting `[Copy Part Number]` to the NX system log (Help → Log File, or
-[Export-System-Log](../Export-System-Log/README.md)). The line says where the menu is, what NX built
-it for, and its entries; that is how to tell why the entries did or did not appear. Set
-`DEBUG = False` and reinstall once the trial is over.
+`helion_copy_part_number.py` has `DEBUG = False`. Set it to `True` (then reinstall and restart NX) and
+every right-click menu adds one line starting `[Copy Part Number]` to the NX system log (Help → Log
+File, or [Export-System-Log](../Export-System-Log/README.md)). The line says where the menu is, what
+NX built it for, and its entries; that is how to tell why the entries did or did not appear. Even
+with `DEBUG = False`, each kind of Assembly Navigator menu is logged once per session
+(`Assembly Navigator menu context=...`).
 
 ## If it does not work
 
@@ -84,8 +91,11 @@ it for, and its entries; that is how to tell why the entries did or did not appe
 * **In the Edit menu, but not on the right-click menu:** look for `[Copy Part Number]` in the system
   log. No `ready:` line means NX did not run the startup script; `menu location=... context=...`
   lines show the menus NX offered and why the entries were not added.
-* **"Nothing is selected"** when it is: the selection was lost on the way to the command. Note what
-  you right-clicked and send the system log.
+* **Not on the top node's right-click menu:** the system log's `Assembly Navigator menu context=...`
+  lines say what NX called that menu and whether the entries were added. Send them.
+* **It copied the displayed part, not what you right-clicked:** the selection was lost on the way to
+  the command (the status line ends with `(the displayed part)`). Note what you right-clicked and
+  send the system log.
 * **"No part name found"**: the part has no `DB_PART_NAME`, and Teamcenter gave no name for its
   number either (for example, a part that is not in Teamcenter). The system log has a
   `[Copy Part Name] skipped` line for it.
@@ -96,8 +106,9 @@ it for, and its entries; that is how to tell why the entries did or did not appe
 
 ## How it works
 
-* `copy_part_number.py` reads NX's selection, finds each part number (the part's `DB_PART_NO`
-  attribute; for a part that is not loaded, the item ID in the part name) and puts the text on the
+* `copy_part_number.py` reads NX's selection (or, if it is empty, takes the displayed part), finds
+  each part number (the part's `DB_PART_NO` attribute; for a part that is not loaded, the item ID in
+  the part name) and puts the text on the
   clipboard through the Windows API (`ctypes`, which NX's Python includes). It is self-contained, so
   NX re-reads it on every click: a change to it works without restarting NX.
 * `copy_part_name.py` runs the same code from `copy_part_number.py`, asking for names: the part's
@@ -106,7 +117,9 @@ it for, and its entries; that is how to tell why the entries did or did not appe
 * `nx_startup\helion_copy_part_number.py` registers a callback with
   `MenuBarManager.RegisterConfigureContextMenuCallback`, which NX calls just before it shows any
   right-click menu. For menus about a component it adds the `HELION_COPY_PART_NUMBER` and
-  `HELION_COPY_PART_NAME` buttons with `ContextMenu.AddMenuButton`. This is the method of Siemens'
+  `HELION_COPY_PART_NAME` buttons with `ContextMenu.AddMenuButton`. The top node's menu (NX calls it
+  `Assemblies.ComponentAssembly`) gets them too, at the bottom, since it has no **Copy**. This is the
+  method of Siemens'
   `ConfigureContextMenu` sample in `%UGII_BASE_DIR%\UGOPEN\SampleNXOpenApplications`. NX only reads
   it at startup.
 * `nx_startup\helion_copy_part_number.men` is the MenuScript that defines the buttons. The installer

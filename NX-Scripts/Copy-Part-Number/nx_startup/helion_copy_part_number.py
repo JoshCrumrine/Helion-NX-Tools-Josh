@@ -2,7 +2,8 @@
 # Author:  jo388c
 # Created: 2026-10-29
 # NX startup script for Copy Part Number: adds "Copy Part Number" and "Copy Part Name" to the
-# right-click menu of assembly components, in the Assembly Navigator and in the graphics window.
+# right-click menu of assembly components, in the Assembly Navigator and in the graphics window, and
+# of the top node (the displayed part) in the Assembly Navigator.
 #
 # Not run by hand. Install-Copy-Part-Number.bat copies it to your NX startup folder
 # (%LOCALAPPDATA%\Siemens\NX2506\startup); NX loads it when it starts and calls startup(), which
@@ -26,6 +27,7 @@ _SELECTION_CHECK_MAX = 50               # selected objects looked at per right-c
 
 _callback_id = None                     # set once the callback is registered
 _missing_buttons_logged = set()
+_ant_contexts_logged = set()
 
 
 def _log(message):
@@ -40,28 +42,38 @@ def _plain(label):
     return (label or "").replace("&", "").rstrip(". ").strip().lower()
 
 
-def _selected_component_count():
-    """Components among the first selected objects; 0 if the selection cannot be read."""
+def _selection_counts():
+    """(selected objects, components or parts among the first of them); (-1, 0) if the selection
+    cannot be read. A part's component assembly (the navigator's top node) counts as a part."""
     try:
         selection = NXOpen.UI.GetUI().SelectionManager
-        count = min(selection.GetNumSelectedObjects(), _SELECTION_CHECK_MAX)
-        return sum(1 for i in range(count)
-                   if isinstance(selection.GetSelectedTaggedObject(i), NXOpen.Assemblies.Component))
+        total = selection.GetNumSelectedObjects()
+        kinds = (NXOpen.Assemblies.Component, NXOpen.Assemblies.ComponentAssembly, NXOpen.BasePart)
+        return total, sum(1 for i in range(min(total, _SELECTION_CHECK_MAX))
+                          if isinstance(selection.GetSelectedTaggedObject(i), kinds))
     except Exception:
-        return 0
+        return -1, 0
 
 
 def _menu_for_components(location, context):
-    """True when NX built this right-click menu for assembly components.
+    """True when NX built this right-click menu for assembly components or for the top node of the
+    Assembly Navigator.
 
     `context` names the class of the object right-clicked, e.g. "Assemblies.Component" or
-    "Features.Cylinder". Menus outside the graphics window also get the entries while the selection
-    holds a component, which covers a multiple selection whose context may name no single class.
-    In the graphics window only `context` counts, so a right-clicked face or body keeps its menu.
+    "Features.Cylinder"; for the navigator's top node (the displayed part) NX 2506 gives
+    "Assemblies.ComponentAssembly". Menus outside the graphics window also get the entries while the
+    selection holds a component (or a part), which covers a multiple selection whose context may
+    name no single class. In the graphics window only `context` counts, so a right-clicked face or
+    body keeps its menu. In the Assembly Navigator ("ANT") a right-click with nothing selected also
+    gets them, in case the top node leaves the selection empty; the copy scripts then copy the
+    displayed part.
     """
-    if context.split(".")[-1].lower() == "component":
+    if context.split(".")[-1].lower() in ("component", "componentassembly"):
         return True
-    return location.lower() != "graphicswindow" and _selected_component_count() > 0
+    if location.lower() == "graphicswindow":
+        return False
+    selected, parts = _selection_counts()
+    return parts > 0 or (selected == 0 and location.upper() == "ANT")
 
 
 def _insert_position(menu):
@@ -128,9 +140,13 @@ def configure_context_menu(menu, props):
         location, context = props.Location or "", props.Context or ""
         added = _add_entries(menu) if _menu_for_components(location, context) else None
         if DEBUG:
-            _log("menu location={0!r} context={1!r} selected components={2} added={3} entries: {4}"
-                 .format(location, context, _selected_component_count(), added or "no",
-                         _describe_entries(menu)))
+            _log("menu location={0!r} context={1!r} selected (objects, components or parts)={2} "
+                 "added={3} entries: {4}".format(location, context, _selection_counts(),
+                                                 added or "no", _describe_entries(menu)))
+        elif location.upper() == "ANT" and context not in _ant_contexts_logged:
+            _ant_contexts_logged.add(context)      # once per kind of navigator node, for support
+            _log("Assembly Navigator menu context={0!r}: entries {1}".format(
+                context, "added " + added if added else "not added"))
     except Exception as ex:
         _log("right-click menu callback failed: {0}".format(ex))
     return 0
